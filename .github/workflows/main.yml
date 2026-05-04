@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: "Main"
+
+on:
+  push:
+    tags: ["*"]
+    branches: ["*"]
+  pull_request:
+    branches: ["*"]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  smoke:
+    name: "Smoke test"
+    runs-on: "ubuntu-latest"
+    permissions:
+      contents: "read"
+    steps:
+      - name: "Checkout"
+        env:
+          REPOSITORY: "${{ github.repository }}"
+          TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        run: |
+          git clone --depth=1 https://x-access-token:${TOKEN:?}@github.com/${REPOSITORY:?}.git ./
+      - name: "Test"
+        run: |
+          docker compose up --detach --wait --wait-timeout 60
+      - name: "After test"
+        if: "always()"
+        run: |
+          docker compose logs --tail all
+          docker compose down --volumes
+          docker compose rm --force

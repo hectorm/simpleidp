@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+name: "simple-idp"
+
+services:
+  simple-idp:
+    image: "simple-idp"
+    pull_policy: "build"
+    build: { context: "./" }
+    restart: "always"
+    hostname: "simple-idp"
+    networks:
+      - "simple-idp"
+    ports:
+      - "8227:8227/tcp"
+    environment:
+      # Login URL:  http://idp.localhost:8227/authorize?client_id=app&redirect_uri=http://app.localhost:3000/callback&response_type=code&scope=openid&code_challenge=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&code_challenge_method=S256
+      # Logout URL: http://idp.localhost:8227/end-session
+      SIMPLE_IDP_ISSUER: "${SIMPLE_IDP_ISSUER:-http://idp.localhost:8227}"
+      SIMPLE_IDP_TITLE: "${SIMPLE_IDP_TITLE:-Simple IdP}"
+      SIMPLE_IDP_CLIENT_APP_ID: "${SIMPLE_IDP_CLIENT_ID:-app}"
+      SIMPLE_IDP_CLIENT_APP_SECRET: "${SIMPLE_IDP_CLIENT_SECRET:-secret}"
+      SIMPLE_IDP_CLIENT_APP_REDIRECT_URL: "${SIMPLE_IDP_CLIENT_REDIRECT_URL:-http://app.localhost:3000/callback}"
+      SIMPLE_IDP_CLIENT_APP_POST_LOGOUT_REDIRECT_URL: "${SIMPLE_IDP_CLIENT_POST_LOGOUT_REDIRECT_URL:-}"
+      SIMPLE_IDP_CLIENT_APP_BACKCHANNEL_LOGOUT_URI: "${SIMPLE_IDP_CLIENT_BACKCHANNEL_LOGOUT_URI:-}"
+      SIMPLE_IDP_CLIENT_APP_BACKCHANNEL_LOGOUT_SESSION_REQUIRED: "${SIMPLE_IDP_CLIENT_BACKCHANNEL_LOGOUT_SESSION_REQUIRED:-}"
+      SIMPLE_IDP_USER_ALICE_USERNAME: "alice"
+      SIMPLE_IDP_USER_ALICE_PASSWORD: "password"
+      SIMPLE_IDP_USER_ALICE_NAME: "Alice Bennett"
+      SIMPLE_IDP_USER_ALICE_GROUPS: "alpha,beta"
+      SIMPLE_IDP_USER_BOB_USERNAME: "bob"
+      SIMPLE_IDP_USER_BOB_PASSWORD: "password"
+      SIMPLE_IDP_USER_BOB_NAME: "Bob Collins"
+      SIMPLE_IDP_USER_BOB_GROUPS: "beta,gamma"
+      SIMPLE_IDP_USER_CAROL_USERNAME: "carol"
+      SIMPLE_IDP_USER_CAROL_PASSWORD: "password"
+      SIMPLE_IDP_USER_CAROL_NAME: "Carol Davis"
+      SIMPLE_IDP_USER_CAROL_GROUPS: "gamma,delta"
+      SIMPLE_IDP_USER_DAN_USERNAME: "dan"
+      SIMPLE_IDP_USER_DAN_PASSWORD: "password"
+      SIMPLE_IDP_USER_DAN_NAME: "Dan Edwards"
+      SIMPLE_IDP_USER_DAN_GROUPS: "delta,epsilon"
+      SIMPLE_IDP_USER_ERIN_USERNAME: "erin"
+      SIMPLE_IDP_USER_ERIN_PASSWORD: "password"
+      SIMPLE_IDP_USER_ERIN_NAME: "Erin Fisher"
+      SIMPLE_IDP_USER_ERIN_GROUPS: "epsilon,zeta"
+      SIMPLE_IDP_USER_FRANK_USERNAME: "frank"
+      SIMPLE_IDP_USER_FRANK_PASSWORD: "password"
+      SIMPLE_IDP_USER_FRANK_NAME: "Frank Graham"
+      SIMPLE_IDP_USER_FRANK_GROUPS: "zeta,eta"
+
+networks:
+  simple-idp:
