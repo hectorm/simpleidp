@@ -189,6 +189,9 @@ func waitForProviderReady(t *testing.T, provider *providerProcess) {
 func (p *providerProcess) stop(t *testing.T) {
 	t.Helper()
 
+	p.http.CloseIdleConnections()
+	p.redirectless.CloseIdleConnections()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
