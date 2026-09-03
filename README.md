@@ -6,6 +6,21 @@ Minimal OIDC Identity Provider that implements the Authorization Code flow with 
 
 I need an IdP for local development and integration testing. Keycloak is more than capable, but too complex for this specific use case, and Dex, while lighter, doesn't implement everything I need for testing. So, with the help of an LLM, I've developed this simple IdP. This isn't strictly "vibe-coded" because I at least guided and verified the low-level implementation, but naturally, this shouldn't be used for any production purposes. It was developed solely to address a use case of my own. If you find this useful, go ahead and use it, but I consider this finished unless I find a bug or need to extend the implementation.
 
+## Endpoints
+
+All endpoints are derived from the issuer URL:
+
+| Endpoint      | URL                                         |
+| ------------- | ------------------------------------------- |
+| Discovery     | `<ISSUER>/.well-known/openid-configuration` |
+| Authorization | `<ISSUER>/authorize`                        |
+| Token         | `<ISSUER>/token`                            |
+| UserInfo      | `<ISSUER>/userinfo`                         |
+| JWKS          | `<ISSUER>/jwks`                             |
+| Introspection | `<ISSUER>/introspect`                       |
+| Revocation    | `<ISSUER>/revoke`                           |
+| End session   | `<ISSUER>/end-session`                      |
+
 ## Configuration
 
 All configuration is done through environment variables. At least one client and one user must be configured.
