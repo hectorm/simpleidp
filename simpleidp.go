@@ -14,8 +14,8 @@
 //
 // SIMPLE_IDP_CLIENT_<LABEL>_ID                                  - client ID
 // SIMPLE_IDP_CLIENT_<LABEL>_SECRET                              - client secret (optional for loopback/native clients)
-// SIMPLE_IDP_CLIENT_<LABEL>_REDIRECT_URL                        - allowed redirect URI
-// SIMPLE_IDP_CLIENT_<LABEL>_POST_LOGOUT_REDIRECT_URL            - allowed post-logout redirect URI (optional)
+// SIMPLE_IDP_CLIENT_<LABEL>_REDIRECT_URL                        - allowed redirect URIs (whitespace-separated)
+// SIMPLE_IDP_CLIENT_<LABEL>_POST_LOGOUT_REDIRECT_URL            - allowed post-logout redirect URIs (whitespace-separated, optional)
 // SIMPLE_IDP_CLIENT_<LABEL>_BACKCHANNEL_LOGOUT_URI              - back-channel logout URI (optional)
 // SIMPLE_IDP_CLIENT_<LABEL>_BACKCHANNEL_LOGOUT_SESSION_REQUIRED - require "sid" in logout token (optional, default "false")
 //
@@ -96,8 +96,8 @@ type client struct {
 	id                               string
 	secret                           string
 	isPublic                         bool
-	redirectURL                      url.URL
-	postLogoutRedirectURL            url.URL
+	redirectURLs                     []url.URL
+	postLogoutRedirectURLs           []url.URL
 	backchannelLogoutURI             url.URL
 	backchannelLogoutSessionRequired bool
 }
@@ -376,7 +376,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 	client, ok := p.clients[clientID]
 	redirectURI, err := url.Parse(params.Get("redirect_uri"))
 
-	if !ok || err != nil || !isAllowedRedirectURL(client.redirectURL, *redirectURI, client.isPublic) {
+	if !ok || err != nil || !isAllowedRedirectURL(client.redirectURLs, *redirectURI, client.isPublic) {
 		http.Error(w, "Unknown client or redirect URI", http.StatusBadRequest)
 		return
 	}
@@ -807,7 +807,7 @@ func (p *identityProvider) handleEndSession(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		client, ok := p.clients[clientID]
-		if !ok || postLogoutRedirectURI != client.postLogoutRedirectURL.String() {
+		if _, matched := resolvePostLogoutRedirectURL(client.postLogoutRedirectURLs, postLogoutRedirectURI); !ok || !matched {
 			http.Error(w, "Unknown client or post-logout redirect URI", http.StatusBadRequest)
 			return
 		}
@@ -1238,7 +1238,8 @@ func (p *identityProvider) renderLogoutCanceled(w http.ResponseWriter, r *http.R
 	var links []formPageLink
 	if clientID != "" {
 		if client, ok := p.clients[clientID]; ok {
-			if returnURL := client.postLogoutRedirectURL.String(); returnURL != "" {
+			if len(client.postLogoutRedirectURLs) > 0 {
+				returnURL := client.postLogoutRedirectURLs[0].String()
 				links = append(links, formPageLink{Href: returnURL, Label: "Return to application", TestID: "return-link"})
 			}
 		}
@@ -1253,7 +1254,7 @@ func (p *identityProvider) renderLogoutCanceled(w http.ResponseWriter, r *http.R
 
 func (p *identityProvider) renderLogoutComplete(w http.ResponseWriter, r *http.Request, clientID, postLogoutRedirectURI, state string) {
 	if postLogoutRedirectURI != "" {
-		postLogoutRedirectURL := p.clients[clientID].postLogoutRedirectURL
+		postLogoutRedirectURL, _ := resolvePostLogoutRedirectURL(p.clients[clientID].postLogoutRedirectURLs, postLogoutRedirectURI)
 		if state != "" {
 			redirectQuery := postLogoutRedirectURL.Query()
 			redirectQuery.Set("state", state)
@@ -1269,7 +1270,8 @@ func (p *identityProvider) renderLogoutComplete(w http.ResponseWriter, r *http.R
 	var links []formPageLink
 	if clientID != "" {
 		if client, ok := p.clients[clientID]; ok {
-			if returnURL := client.postLogoutRedirectURL.String(); returnURL != "" {
+			if len(client.postLogoutRedirectURLs) > 0 {
+				returnURL := client.postLogoutRedirectURLs[0].String()
 				links = append(links, formPageLink{Href: returnURL, Label: "Return to application", TestID: "return-link"})
 			}
 		}
@@ -2231,18 +2233,32 @@ func isLoopbackURL(u *url.URL) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func isAllowedRedirectURL(redirectURL, redirectURI url.URL, allowLoopbackPort bool) bool {
-	if redirectURL.Host != redirectURI.Host &&
-		!(allowLoopbackPort && isLoopbackURL(&redirectURL) && isLoopbackURL(&redirectURI) &&
-			redirectURL.Hostname() == redirectURI.Hostname()) {
-		return false
+func isAllowedRedirectURL(redirectURLs []url.URL, redirectURI url.URL, allowLoopbackPort bool) bool {
+	for _, redirectURL := range redirectURLs {
+		if redirectURL.Host != redirectURI.Host &&
+			!(allowLoopbackPort && isLoopbackURL(&redirectURL) && isLoopbackURL(&redirectURI) &&
+				redirectURL.Hostname() == redirectURI.Hostname()) {
+			continue
+		}
+		if redirectURL.Scheme == redirectURI.Scheme &&
+			redirectURL.User == nil && redirectURI.User == nil &&
+			redirectURL.EscapedPath() == redirectURI.EscapedPath() &&
+			redirectURL.ForceQuery == redirectURI.ForceQuery &&
+			redirectURL.RawQuery == redirectURI.RawQuery &&
+			redirectURL.Fragment == redirectURI.Fragment {
+			return true
+		}
 	}
-	return redirectURL.Scheme == redirectURI.Scheme &&
-		redirectURL.User == nil && redirectURI.User == nil &&
-		redirectURL.EscapedPath() == redirectURI.EscapedPath() &&
-		redirectURL.ForceQuery == redirectURI.ForceQuery &&
-		redirectURL.RawQuery == redirectURI.RawQuery &&
-		redirectURL.Fragment == redirectURI.Fragment
+	return false
+}
+
+func resolvePostLogoutRedirectURL(postLogoutRedirectURLs []url.URL, postLogoutRedirectURI string) (url.URL, bool) {
+	for _, postLogoutRedirectURL := range postLogoutRedirectURLs {
+		if postLogoutRedirectURL.String() == postLogoutRedirectURI {
+			return postLogoutRedirectURL, true
+		}
+	}
+	return url.URL{}, false
 }
 
 func validateIssuerURL(rawURL string) (*url.URL, error) {
@@ -2269,6 +2285,21 @@ func validateIssuerURL(rawURL string) (*url.URL, error) {
 		return nil, fmt.Errorf("must not contain a query string: %q", rawURL)
 	}
 	return u, nil
+}
+
+func validateRedirectURLs(rawURLs string) ([]url.URL, error) {
+	var redirectURLs []url.URL
+	for rawURL := range strings.FieldsSeq(rawURLs) {
+		parsed, err := validateRedirectURL(rawURL)
+		if err != nil {
+			return nil, err
+		}
+		redirectURLs = append(redirectURLs, *parsed)
+	}
+	if len(redirectURLs) == 0 {
+		return nil, errors.New("must include at least one URL")
+	}
+	return redirectURLs, nil
 }
 
 func validateRedirectURL(rawURL string) (*url.URL, error) {
@@ -2339,21 +2370,24 @@ func loadClients(environ []string, lookupEnv func(string) string) (map[string]cl
 		if _, dup := clients[id]; dup {
 			return nil, fmt.Errorf("duplicate client ID %q", id)
 		}
-		redirectURL, err := validateRedirectURL(rawRedirectURL)
+		redirectURLs, err := validateRedirectURLs(rawRedirectURL)
 		if err != nil {
 			return nil, fmt.Errorf("client %q redirect URL: %w", label, err)
 		}
 		isPublic := secret == ""
-		if isPublic && !isLoopbackURL(redirectURL) {
-			return nil, fmt.Errorf("client %q: public clients (no secret) must use a loopback redirect URL", label)
+		if isPublic {
+			for i := range redirectURLs {
+				if !isLoopbackURL(&redirectURLs[i]) {
+					return nil, fmt.Errorf("client %q: public clients (no secret) must use loopback redirect URLs", label)
+				}
+			}
 		}
-		var postLogoutRedirectURL url.URL
+		var postLogoutRedirectURLs []url.URL
 		if raw := lookupEnv(prefix + label + "_POST_LOGOUT_REDIRECT_URL"); raw != "" {
-			parsed, err := validateRedirectURL(raw)
+			postLogoutRedirectURLs, err = validateRedirectURLs(raw)
 			if err != nil {
 				return nil, fmt.Errorf("client %q post-logout redirect URL: %w", label, err)
 			}
-			postLogoutRedirectURL = *parsed
 		}
 		var backchannelLogoutURI url.URL
 		if raw := lookupEnv(prefix + label + "_BACKCHANNEL_LOGOUT_URI"); raw != "" {
@@ -2368,8 +2402,8 @@ func loadClients(environ []string, lookupEnv func(string) string) (map[string]cl
 			id:                               id,
 			secret:                           secret,
 			isPublic:                         isPublic,
-			redirectURL:                      *redirectURL,
-			postLogoutRedirectURL:            postLogoutRedirectURL,
+			redirectURLs:                     redirectURLs,
+			postLogoutRedirectURLs:           postLogoutRedirectURLs,
 			backchannelLogoutURI:             backchannelLogoutURI,
 			backchannelLogoutSessionRequired: backchannelLogoutSessionRequired,
 		}

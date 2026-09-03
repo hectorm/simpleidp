@@ -868,3 +868,28 @@ func testOAuth21RedirectURIParameterInTokenRequest(t *testing.T) {
 		}
 	})
 }
+
+func testOAuth21MultipleRedirectURIs(t *testing.T) {
+	const secondRedirect = "http://localhost/alt/callback"
+
+	config := defaultProviderConfig()
+	for i, c := range config.Clients {
+		if c.ID == webClientID {
+			config.Clients[i].RedirectURL = webClientRedirect + " " + secondRedirect
+		}
+	}
+	provider := startProvider(t, config)
+
+	for _, redirectURI := range []string{webClientRedirect, secondRedirect} {
+		request := newDefaultConfidentialAuthorizationRequest("oauth21-multiple-redirect-uris")
+		request.RedirectURI = redirectURI
+		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+		if token.AccessToken == "" {
+			t.Fatalf("expected access token for redirect uri %q, got %#v", redirectURI, token)
+		}
+	}
+}
