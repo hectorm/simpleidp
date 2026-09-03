@@ -66,3 +66,4 @@ Users are configured the same way as clients, with a label prefix.
 | `SIMPLE_IDP_USER_<LABEL>_PICTURE`            | `picture` claim (default: empty)                   |
 | `SIMPLE_IDP_USER_<LABEL>_LOCALE`             | `locale` claim (default: empty)                    |
 | `SIMPLE_IDP_USER_<LABEL>_GROUPS`             | Comma-separated `groups` claim (default: empty)    |
+| `SIMPLE_IDP_USER_<LABEL>_ROLES`              | Comma-separated `roles` claim (default: empty)     |

@@ -32,6 +32,7 @@
 // SIMPLE_IDP_USER_<LABEL>_PICTURE            - "picture" claim (default: empty)
 // SIMPLE_IDP_USER_<LABEL>_LOCALE             - "locale" claim (default: empty)
 // SIMPLE_IDP_USER_<LABEL>_GROUPS             - comma-separated "groups" claim (default: empty)
+// SIMPLE_IDP_USER_<LABEL>_ROLES              - comma-separated "roles" claim (default: empty)
 //
 // At least one client and one user must be configured.
 package simpleidp
@@ -114,6 +115,7 @@ type user struct {
 	picture           string
 	locale            string
 	groups            []string
+	roles             []string
 }
 
 type session struct {
@@ -313,7 +315,7 @@ func (p *identityProvider) handleDiscovery(w http.ResponseWriter, r *http.Reques
 		IntrospectionEndpoint:             p.issuer + "/introspect",
 		RevocationEndpoint:                p.issuer + "/revoke",
 		EndSessionEndpoint:                p.issuer + "/end-session",
-		ScopesSupported:                   []string{"openid", "profile", "email", "groups"},
+		ScopesSupported:                   []string{"openid", "profile", "email", "groups", "roles"},
 		ResponseTypesSupported:            []string{"code"},
 		ResponseModesSupported:            []string{"query"},
 		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
@@ -323,7 +325,7 @@ func (p *identityProvider) handleDiscovery(w http.ResponseWriter, r *http.Reques
 		CodeChallengeMethodsSupported:     []string{"S256"},
 		ClaimsSupported: []string{
 			"sub", "iss", "aud", "iat", "exp", "auth_time", "nonce", "sid", "email", "email_verified",
-			"name", "preferred_username", "profile", "picture", "locale", "groups",
+			"name", "preferred_username", "profile", "picture", "locale", "groups", "roles",
 		},
 		PromptValuesSupported:                      []string{"none", "login", "consent", "select_account"},
 		ClaimsParameterSupported:                   false,
@@ -2014,6 +2016,8 @@ func (p *identityProvider) buildClaimsForScope(user user, scope string) map[stri
 			}
 		case "groups":
 			claims["groups"] = user.groups
+		case "roles":
+			claims["roles"] = user.roles
 		}
 	}
 	return claims
@@ -2136,7 +2140,7 @@ func filterScope(scope string) (string, bool) {
 	var kept []string
 	for candidateScope := range strings.FieldsSeq(scope) {
 		switch candidateScope {
-		case "openid", "profile", "email", "groups":
+		case "openid", "profile", "email", "groups", "roles":
 			kept = append(kept, candidateScope)
 		}
 	}
@@ -2435,6 +2439,7 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 		picture := envOr(lookupEnv, prefix+label+"_PICTURE", "")
 		locale := envOr(lookupEnv, prefix+label+"_LOCALE", "")
 		groups := envSplit(lookupEnv, prefix+label+"_GROUPS", ",")
+		roles := envSplit(lookupEnv, prefix+label+"_ROLES", ",")
 
 		if username == "" || password == "" {
 			return nil, fmt.Errorf("incomplete user configuration for label %q", label)
@@ -2468,6 +2473,7 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 			picture:           picture,
 			locale:            locale,
 			groups:            groups,
+			roles:             roles,
 		}
 		slog.LogAttrs(context.Background(), slog.LevelInfo, "registered user", slog.String("label", label), slog.String("username", username))
 	}
