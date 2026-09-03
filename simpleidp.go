@@ -48,7 +48,8 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -1315,9 +1316,9 @@ func (p *identityProvider) resolveIDTokenHint(token string) (tokenHint, bool) {
 	}
 
 	var claims struct {
-		Iss string          `json:"iss"`
-		Sub string          `json:"sub"`
-		Aud json.RawMessage `json:"aud"`
+		Iss string         `json:"iss"`
+		Sub string         `json:"sub"`
+		Aud jsontext.Value `json:"aud"`
 	}
 
 	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
@@ -2052,7 +2053,7 @@ func redirectWithCode(w http.ResponseWriter, r *http.Request, issuer string, red
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_ = json.MarshalWrite(w, v, json.Deterministic(true))
 }
 
 func writeTokenError(w http.ResponseWriter, status int, errorCode, errorDescription string) {
