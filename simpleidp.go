@@ -744,16 +744,7 @@ func (p *identityProvider) handleRevoke(w http.ResponseWriter, r *http.Request) 
 		if !known || stored.clientID != client.id {
 			return false
 		}
-		for k, v := range p.refreshTokens {
-			if v.code == stored.code {
-				delete(p.refreshTokens, k)
-			}
-		}
-		for k, v := range p.accessTokens {
-			if v.code == stored.code {
-				delete(p.accessTokens, k)
-			}
-		}
+		p.revokeGrant(stored.code)
 		return true
 	}
 
@@ -1398,17 +1389,7 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 
 	if codeReused {
 		p.mu.Lock()
-		for tokenValue, accessToken := range p.accessTokens {
-			if accessToken.code == code {
-				delete(p.accessTokens, tokenValue)
-			}
-		}
-		for k, v := range p.refreshTokens {
-			if v.code == code {
-				delete(p.refreshTokens, k)
-			}
-		}
-		delete(p.pendingCodes, code)
+		p.revokeGrant(code)
 		p.mu.Unlock()
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "Invalid, expired, or previously used authorization code")
 		return
@@ -1428,17 +1409,7 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 	currentSession, sessionKnown := p.sessions[pendingCode.sessionID]
 	sessionKnown = sessionKnown && !isSessionExpired(currentSession, time.Now())
 	if latest, ok := p.pendingCodes[code]; !ok || !latest.consumedAt.IsZero() || !sessionKnown {
-		for tokenValue, accessToken := range p.accessTokens {
-			if accessToken.code == code {
-				delete(p.accessTokens, tokenValue)
-			}
-		}
-		for k, v := range p.refreshTokens {
-			if v.code == code {
-				delete(p.refreshTokens, k)
-			}
-		}
-		delete(p.pendingCodes, code)
+		p.revokeGrant(code)
 		p.mu.Unlock()
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "Invalid, expired, or previously used authorization code")
 		return
@@ -1487,8 +1458,8 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 
 	p.mu.Lock()
 	storedRefreshToken, tokenKnown := p.refreshTokens[refreshTokenValue]
-	tokenExpired := tokenKnown && isRefreshTokenExpired(storedRefreshToken, time.Now())
 	tokenReused := tokenKnown && !storedRefreshToken.consumedAt.IsZero()
+	tokenExpired := tokenKnown && !tokenReused && isRefreshTokenExpired(storedRefreshToken, time.Now())
 	if tokenExpired {
 		delete(p.refreshTokens, refreshTokenValue)
 	}
@@ -1510,16 +1481,7 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 
 	if tokenReused {
 		p.mu.Lock()
-		for k, v := range p.refreshTokens {
-			if v.code == storedRefreshToken.code {
-				delete(p.refreshTokens, k)
-			}
-		}
-		for k, v := range p.accessTokens {
-			if v.code == storedRefreshToken.code {
-				delete(p.accessTokens, k)
-			}
-		}
+		p.revokeGrant(storedRefreshToken.code)
 		p.mu.Unlock()
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "Invalid or expired refresh token")
 		return
@@ -1542,16 +1504,7 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 	issuedAt := time.Now()
 	p.mu.Lock()
 	if latest, ok := p.refreshTokens[refreshTokenValue]; !ok || !latest.consumedAt.IsZero() {
-		for k, v := range p.refreshTokens {
-			if v.code == storedRefreshToken.code {
-				delete(p.refreshTokens, k)
-			}
-		}
-		for k, v := range p.accessTokens {
-			if v.code == storedRefreshToken.code {
-				delete(p.accessTokens, k)
-			}
-		}
+		p.revokeGrant(storedRefreshToken.code)
 		p.mu.Unlock()
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "Invalid or expired refresh token")
 		return
@@ -1796,6 +1749,22 @@ func (p *identityProvider) validateCSRFToken(token, ownerID string) bool {
 	return hmac.Equal(sig, mac.Sum(nil))
 }
 
+// -------------------------------------------------------------------------- //
+
+func (p *identityProvider) revokeGrant(code string) {
+	delete(p.pendingCodes, code)
+	for k, v := range p.accessTokens {
+		if v.code == code {
+			delete(p.accessTokens, k)
+		}
+	}
+	for k, v := range p.refreshTokens {
+		if v.code == code {
+			delete(p.refreshTokens, k)
+		}
+	}
+}
+
 func (p *identityProvider) removeExpiredState() {
 	now := time.Now()
 	for k, v := range p.sessions {
@@ -1814,13 +1783,15 @@ func (p *identityProvider) removeExpiredState() {
 		}
 	}
 	for k, v := range p.refreshTokens {
-		if isRefreshTokenExpired(v, now) {
+		expired := isRefreshTokenExpired(v, now)
+		if !v.consumedAt.IsZero() {
+			expired = now.Sub(v.sessionStartedAt) > refreshTokenMaxTTL
+		}
+		if expired {
 			delete(p.refreshTokens, k)
 		}
 	}
 }
-
-// -------------------------------------------------------------------------- //
 
 func isSessionExpired(currentSession session, now time.Time) bool {
 	return now.Sub(currentSession.lastSeenAt) > sessionIdleTTL || now.Sub(currentSession.authenticatedAt) > sessionMaxTTL
@@ -1837,6 +1808,8 @@ func isPendingCodeExpired(code pendingCode, now time.Time) bool {
 	}
 	return now.Sub(code.createdAt) > ttl
 }
+
+// -------------------------------------------------------------------------- //
 
 func (p *identityProvider) authenticateEndUser(username, password string) (user, bool) {
 	authenticatedUser, ok := p.users[username]

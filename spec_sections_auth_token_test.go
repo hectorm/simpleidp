@@ -1183,6 +1183,40 @@ func testRefreshTokenRecommendations(t *testing.T) {
 		}
 	})
 
+	t.Run("detects refresh token replay after the consumed token idle timeout", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		request := newDefaultConfidentialAuthorizationRequest("refresh-replay-after-idle-timeout")
+		request.ClientID = nativeClientID
+		request.RedirectURI = nativeClientRedirect
+		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			CodeVerifier: request.Verifier,
+		})
+		refreshed := exchangeRefreshToken(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			RefreshToken: token.RefreshToken,
+		})
+		provider.expireRefreshTokenIdle(t, token.RefreshToken)
+
+		request.Prompt = "none"
+		expectAuthorizationCodeRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, provider.issuer)
+		for _, refreshToken := range []string{token.RefreshToken, refreshed.RefreshToken} {
+			errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
+				ClientID:     request.ClientID,
+				GrantType:    "refresh_token",
+				RefreshToken: refreshToken,
+			}), http.StatusBadRequest)
+			if errResp.Error != "invalid_grant" {
+				t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_grant")
+			}
+		}
+		resp := provider.getUserInfoResponse(t, refreshed.AccessToken)
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("userinfo status mismatch after replay: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
+		}
+	})
+
 	t.Run("expires refresh tokens after inactivity", func(t *testing.T) {
 		provider := startProvider(t, defaultProviderConfig())
 		request := newDefaultConfidentialAuthorizationRequest("refresh-token-idle-expiry")
