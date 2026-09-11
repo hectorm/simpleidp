@@ -380,6 +380,31 @@ func testAuthorizationServerAuthenticatesEndUser(t *testing.T) {
 		expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "login_required")
 	})
 
+	t.Run("creates a new session when the previous one expires during reauthentication", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		request := newDefaultConfidentialAuthorizationRequest("reauthentication-expired-session")
+		_ = authorizeAndLogin(t, provider, request)
+		sessionID := provider.currentSessionID(t)
+		request.Prompt = "login"
+		body := readBody(t, provider.getAuthorize(t, authorizeParams(request)))
+		provider.expireSessionMax(t)
+
+		code := expectAuthorizationCodeRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
+		token := exchangeAuthorizationCode(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         code,
+			CodeVerifier: request.Verifier,
+		})
+		claims := verifyIDToken(t, provider, token.IDToken)
+		if claims.Sid == sessionID {
+			t.Fatal("expected a new session identifier after the previous session expired")
+		}
+		if claims.Sub != testSubject {
+			t.Fatalf("subject mismatch after reauthentication: got %q, want %q", claims.Sub, testSubject)
+		}
+	})
+
 	t.Run("returns a positive response for prompt none when a session exists", func(t *testing.T) {
 		provider := startProvider(t, defaultProviderConfig())
 		initialRequest := newDefaultConfidentialAuthorizationRequest("prompt-none-session-initial")

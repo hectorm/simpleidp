@@ -325,10 +325,7 @@ func (p *identityProvider) handleLogin(w http.ResponseWriter, r *http.Request) {
 		p.renderLoginForm(w, r, p.base+"/login", username, "Invalid username or password")
 		return
 	}
-	if sessionID := p.readSession(r); sessionID != "" {
-		p.clearSession(w, sessionID)
-	}
-	p.issueSession(w, authenticatedUser.username, time.Now())
+	p.issueSession(w, authenticatedUser.username, time.Now(), p.readSession(r))
 	p.clearPreAuthSession(w)
 	http.Redirect(w, r, p.base+"/", http.StatusSeeOther)
 }
@@ -575,11 +572,8 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		redirectWithError(w, r, p.issuer, *redirectURI, state, "login_required", "Authenticated user does not match id_token_hint")
 		return
 	}
-	if sessionID != "" {
-		p.clearSession(w, sessionID)
-	}
 	authenticatedAt := time.Now()
-	sessionID = p.issueSession(w, authenticatedUser.username, authenticatedAt)
+	sessionID = p.issueSession(w, authenticatedUser.username, authenticatedAt, sessionID)
 	p.clearPreAuthSession(w)
 	p.authorizeUser(w, r, authorization, authenticatedUser.username, authenticatedAt, sessionID)
 }
@@ -1705,9 +1699,23 @@ func (p *identityProvider) readSession(r *http.Request) string {
 	return p.sessionIDFromCookie(p.readCookie(r, sessionCookieBaseName))
 }
 
-func (p *identityProvider) issueSession(w http.ResponseWriter, username string, authenticatedAt time.Time) string {
+func (p *identityProvider) issueSession(w http.ResponseWriter, username string, authenticatedAt time.Time, sessionID string) string {
+	if sessionID != "" {
+		p.mu.Lock()
+		currentSession, sessionKnown := p.sessions[sessionID]
+		if sessionKnown && currentSession.username == username && !isSessionExpired(currentSession, authenticatedAt) {
+			currentSession.authenticatedAt = authenticatedAt
+			currentSession.lastSeenAt = authenticatedAt
+			p.sessions[sessionID] = currentSession
+			p.mu.Unlock()
+			return sessionID
+		}
+		p.mu.Unlock()
+		p.clearSession(w, sessionID)
+	}
+
 	cookieValue := rand.Text()
-	sessionID := p.sessionIDFromCookie(cookieValue)
+	sessionID = p.sessionIDFromCookie(cookieValue)
 	p.mu.Lock()
 	p.sessions[sessionID] = session{
 		username:        username,

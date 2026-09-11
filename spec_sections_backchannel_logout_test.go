@@ -107,7 +107,7 @@ func testBackChannelLogout(t *testing.T) {
 		expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "login_required")
 	})
 
-	t.Run("ends superseded sessions when the browser reauthenticates", func(t *testing.T) {
+	t.Run("preserves grants when the browser reauthenticates as the same user", func(t *testing.T) {
 		for _, trigger := range []string{"prompt login", "max_age", "select_account"} {
 			t.Run(trigger, func(t *testing.T) {
 				receiver, receiverURL := startBackchannelLogoutReceiver(t)
@@ -117,7 +117,140 @@ func testBackChannelLogout(t *testing.T) {
 				}
 				provider := startProvider(t, config)
 				otherBrowser := newProviderBrowser(t, provider)
-				request := newDefaultConfidentialAuthorizationRequest("reauthentication-logout")
+				request := newDefaultConfidentialAuthorizationRequest("reauthentication-grants")
+				token := authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					CodeVerifier: request.Verifier,
+				})
+				otherToken := authorizeAndExchange(t, otherBrowser, request, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					CodeVerifier: request.Verifier,
+				})
+				claims := verifyIDToken(t, provider, token.IDToken)
+				provider.idp.mu.Lock()
+				currentSession := provider.idp.sessions[claims.Sid]
+				currentSession.authenticatedAt = time.Now().Add(-time.Minute)
+				provider.idp.sessions[claims.Sid] = currentSession
+				provider.idp.mu.Unlock()
+
+				request.ClientID = otherClientID
+				request.RedirectURI = otherClientRedirect
+				params := authorizeParams(request)
+				switch trigger {
+				case "prompt login":
+					params.Set("prompt", "login")
+				case "max_age":
+					params.Set("max_age", "30")
+				case "select_account":
+					params.Set("prompt", "select_account")
+				}
+				body := readBody(t, provider.getAuthorize(t, params))
+				body = readBody(t, submitLoginForm(t, provider, body, testUsername, "wrong-password"))
+				_ = fetchUserInfo(t, provider, token.AccessToken)
+				if requests := receiver.receivedRequests(); len(requests) != 0 {
+					t.Fatalf("expected no logout after failed authentication, got %d requests", len(requests))
+				}
+
+				reauthenticatedAt := time.Now().Unix()
+				code := expectAuthorizationCodeRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
+				reauthenticated := exchangeAuthorizationCode(t, provider, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: otherClientSecret,
+					Code:         code,
+					CodeVerifier: request.Verifier,
+				})
+				reauthenticatedClaims := verifyIDToken(t, provider, reauthenticated.IDToken)
+				if reauthenticatedClaims.Sid != claims.Sid {
+					t.Fatalf("session changed after reauthentication: got %q, want %q", reauthenticatedClaims.Sid, claims.Sid)
+				}
+				if reauthenticatedClaims.AuthTime < reauthenticatedAt {
+					t.Fatalf("expected fresh auth_time, got %d, want at least %d", reauthenticatedClaims.AuthTime, reauthenticatedAt)
+				}
+				if requests := receiver.receivedRequests(); len(requests) != 0 {
+					t.Fatalf("expected no logout after reauthentication, got %d requests", len(requests))
+				}
+				_ = fetchUserInfo(t, provider, token.AccessToken)
+				refreshed := exchangeRefreshToken(t, provider, tokenRequest{
+					ClientID:     webClientID,
+					ClientSecret: webClientSecret,
+					RefreshToken: token.RefreshToken,
+				})
+				if refreshedClaims := verifyIDToken(t, provider, refreshed.IDToken); refreshedClaims.AuthTime != claims.AuthTime {
+					t.Fatalf("original grant auth_time changed: got %d, want %d", refreshedClaims.AuthTime, claims.AuthTime)
+				}
+
+				params.Set("prompt", "none")
+				params.Set("max_age", "30")
+				code = expectAuthorizationCodeRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer)
+				silent := exchangeAuthorizationCode(t, provider, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: otherClientSecret,
+					Code:         code,
+					CodeVerifier: request.Verifier,
+				})
+				if silentClaims := verifyIDToken(t, provider, silent.IDToken); silentClaims.AuthTime != reauthenticatedClaims.AuthTime {
+					t.Fatalf("session auth_time mismatch: got %d, want %d", silentClaims.AuthTime, reauthenticatedClaims.AuthTime)
+				}
+
+				body = fetchLogoutForm(t, provider, url.Values{})
+				_ = readBody(t, submitConsentForm(t, provider, body, "yes"))
+				requests := receiver.receivedRequests()
+				if len(requests) != 2 {
+					t.Fatalf("expected 2 logout notifications, got %d", len(requests))
+				}
+				audiences := map[string]bool{}
+				for _, request := range requests {
+					logoutClaims := verifyLogoutToken(t, provider, request.rawToken)
+					if logoutClaims.Sid != claims.Sid || logoutClaims.Sub != testSubject {
+						t.Fatalf("unexpected logout claims: %#v", logoutClaims)
+					}
+					audiences[logoutClaims.Aud] = true
+				}
+				if !audiences[webClientID] || !audiences[otherClientID] {
+					t.Fatalf("unexpected logout audiences: %#v", audiences)
+				}
+				for _, accessToken := range []string{token.AccessToken, refreshed.AccessToken, reauthenticated.AccessToken, silent.AccessToken} {
+					resp := provider.getUserInfoResponse(t, accessToken)
+					body := readBody(t, resp)
+					if resp.StatusCode != http.StatusUnauthorized {
+						t.Fatalf("userinfo status after logout mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
+					}
+				}
+				for _, request := range []tokenRequest{
+					{ClientID: webClientID, ClientSecret: webClientSecret, GrantType: "refresh_token", RefreshToken: refreshed.RefreshToken},
+					{ClientID: otherClientID, ClientSecret: otherClientSecret, GrantType: "refresh_token", RefreshToken: reauthenticated.RefreshToken},
+				} {
+					errResp := expectJSONError(t, provider.postToken(t, request), http.StatusBadRequest)
+					if errResp.Error != "invalid_grant" {
+						t.Fatalf("refresh error after logout mismatch: got %q, want %q", errResp.Error, "invalid_grant")
+					}
+				}
+				_ = fetchUserInfo(t, otherBrowser, otherToken.AccessToken)
+			})
+		}
+	})
+
+	t.Run("ends the previous session when the browser switches accounts", func(t *testing.T) {
+		for _, trigger := range []string{"prompt login", "max_age", "select_account"} {
+			t.Run(trigger, func(t *testing.T) {
+				receiver, receiverURL := startBackchannelLogoutReceiver(t)
+				config := defaultProviderConfig()
+				config.Users = append(config.Users, userConfig{
+					Label:    "BOB",
+					Username: "bob",
+					Password: "bob-password",
+					Sub:      "bob-subject",
+					Name:     "Bob Example",
+					Email:    "bob@example.com",
+				})
+				for i := range config.Clients {
+					config.Clients[i].BackchannelLogoutURI = receiverURL
+				}
+				provider := startProvider(t, config)
+				otherBrowser := newProviderBrowser(t, provider)
+				request := newDefaultConfidentialAuthorizationRequest("account-switch-logout")
 				token := authorizeAndExchange(t, provider, request, tokenRequest{
 					ClientID:     request.ClientID,
 					ClientSecret: webClientSecret,
@@ -146,7 +279,7 @@ func testBackChannelLogout(t *testing.T) {
 				if requests := receiver.receivedRequests(); len(requests) != 0 {
 					t.Fatalf("expected no logout before successful authentication, got %d requests", len(requests))
 				}
-				code := expectAuthorizationCodeRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
+				code := expectAuthorizationCodeRedirect(t, submitLoginForm(t, provider, body, "bob", "bob-password"), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
 				replacement := exchangeAuthorizationCode(t, provider, tokenRequest{
 					ClientID:     request.ClientID,
 					ClientSecret: otherClientSecret,
@@ -154,21 +287,24 @@ func testBackChannelLogout(t *testing.T) {
 					CodeVerifier: request.Verifier,
 				})
 				replacementClaims := verifyIDToken(t, provider, replacement.IDToken)
+				if replacementClaims.Sub != "bob-subject" {
+					t.Fatalf("subject after account switch mismatch: got %q, want %q", replacementClaims.Sub, "bob-subject")
+				}
 				if replacementClaims.Sid == claims.Sid {
-					t.Fatal("expected a new session identifier after reauthentication")
+					t.Fatal("expected a new session identifier after switching accounts")
 				}
 				requests := receiver.receivedRequests()
 				if len(requests) != 1 {
 					t.Fatalf("expected 1 logout notification for the superseded session, got %d", len(requests))
 				}
 				logoutClaims := verifyLogoutToken(t, provider, requests[0].rawToken)
-				if logoutClaims.Aud != webClientID || logoutClaims.Sid != claims.Sid {
+				if logoutClaims.Aud != webClientID || logoutClaims.Sid != claims.Sid || logoutClaims.Sub != testSubject {
 					t.Fatalf("unexpected superseded-session logout claims: %#v", logoutClaims)
 				}
 				resp := provider.getUserInfoResponse(t, token.AccessToken)
 				body = readBody(t, resp)
 				if resp.StatusCode != http.StatusUnauthorized {
-					t.Fatalf("userinfo status mismatch after reauthentication: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
+					t.Fatalf("userinfo status mismatch after switching accounts: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
 				}
 				errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
 					ClientID:     webClientID,
@@ -177,7 +313,7 @@ func testBackChannelLogout(t *testing.T) {
 					RefreshToken: token.RefreshToken,
 				}), http.StatusBadRequest)
 				if errResp.Error != "invalid_grant" {
-					t.Fatalf("refresh error mismatch after reauthentication: got %q, want %q", errResp.Error, "invalid_grant")
+					t.Fatalf("refresh error mismatch after switching accounts: got %q, want %q", errResp.Error, "invalid_grant")
 				}
 				body = fetchLogoutForm(t, provider, url.Values{})
 				_ = readBody(t, submitConsentForm(t, provider, body, "yes"))
@@ -186,7 +322,7 @@ func testBackChannelLogout(t *testing.T) {
 					t.Fatalf("expected 2 logout notifications after ending both sessions, got %d", len(requests))
 				}
 				logoutClaims = verifyLogoutToken(t, provider, requests[1].rawToken)
-				if logoutClaims.Aud != otherClientID || logoutClaims.Sid != replacementClaims.Sid {
+				if logoutClaims.Aud != otherClientID || logoutClaims.Sid != replacementClaims.Sid || logoutClaims.Sub != "bob-subject" {
 					t.Fatalf("unexpected replacement-session logout claims: %#v", logoutClaims)
 				}
 				_ = fetchUserInfo(t, otherBrowser, otherToken.AccessToken)
