@@ -386,11 +386,12 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
+	sessionID := p.readSession(r)
 	if r.Method == http.MethodPost && (confirm != "" || username != "" || password != "") {
 		ownerID := ""
 		if confirm != "" {
-			if id := p.readSession(r); id != "" {
-				ownerID = "session:" + id
+			if sessionID != "" {
+				ownerID = "session:" + sessionID
 			}
 		} else {
 			if id := p.readPreAuthSession(r); id != "" {
@@ -406,9 +407,13 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 	if r.Method == http.MethodPost && confirm != "" {
 		now := time.Now()
 		p.mu.Lock()
+		currentSession, sessionKnown := p.sessions[sessionID]
 		pendingCode, codeKnown := p.pendingCodes[code]
 		if codeKnown && isPendingCodeExpired(pendingCode, now) {
 			delete(p.pendingCodes, code)
+			codeKnown = false
+		}
+		if !sessionKnown || isSessionExpired(currentSession, now) || pendingCode.sessionID != sessionID {
 			codeKnown = false
 		}
 		if codeKnown && (pendingCode.clientID != client.id || pendingCode.redirectURI != *redirectURI || !pendingCode.consumedAt.IsZero() || !pendingCode.consentRequired) {
@@ -429,7 +434,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		p.mu.Unlock()
 
 		if !codeKnown {
-			redirectWithError(w, r, p.issuer, *redirectURI, pendingCode.state, "invalid_request", "Invalid consent request")
+			redirectWithError(w, r, p.issuer, *redirectURI, state, "invalid_request", "Invalid consent request")
 			return
 		}
 		if confirm == "no" {
@@ -482,7 +487,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 	}
 	currentSession, sessionKnown := session{}, false
 	if !hasPromptValue(prompt, "login") && !hasPromptValue(prompt, "select_account") {
-		currentSession, sessionKnown = p.resumeSession(p.readSession(r))
+		currentSession, sessionKnown = p.resumeSession(sessionID)
 		if sessionKnown && !p.canReuseSession(currentSession, hintedUser, maxAge, maxAgeRequested) {
 			sessionKnown = false
 		}
@@ -493,12 +498,12 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 			redirectWithError(w, r, p.issuer, *redirectURI, state, "login_required", "Authentication required")
 			return
 		}
-		p.authorizeUser(w, r, authorization, currentSession.username, currentSession.authenticatedAt, p.readSession(r))
+		p.authorizeUser(w, r, authorization, currentSession.username, currentSession.authenticatedAt, sessionID)
 		return
 	}
 
 	if sessionKnown && (r.Method == http.MethodGet || (username == "" && password == "")) {
-		p.authorizeUser(w, r, authorization, currentSession.username, currentSession.authenticatedAt, p.readSession(r))
+		p.authorizeUser(w, r, authorization, currentSession.username, currentSession.authenticatedAt, sessionID)
 		return
 	}
 
@@ -516,7 +521,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	authenticatedAt := time.Now()
-	sessionID := p.issueSession(w, authenticatedUser.username, authenticatedAt)
+	sessionID = p.issueSession(w, authenticatedUser.username, authenticatedAt)
 	p.clearPreAuthSession(w)
 	p.authorizeUser(w, r, authorization, authenticatedUser.username, authenticatedAt, sessionID)
 }
@@ -1353,6 +1358,12 @@ func (p *identityProvider) authorizeUser(w http.ResponseWriter, r *http.Request,
 	issuedCode := rand.Text()
 
 	p.mu.Lock()
+	currentSession, sessionKnown := p.sessions[sessionID]
+	if !sessionKnown || isSessionExpired(currentSession, time.Now()) {
+		p.mu.Unlock()
+		redirectWithError(w, r, p.issuer, authorization.redirectURI, authorization.state, "login_required", "Authentication required")
+		return
+	}
 	p.pendingCodes[issuedCode] = pendingCode{
 		clientID:        authorization.client.id,
 		username:        username,
@@ -1454,7 +1465,9 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 
 	issuedAt := time.Now()
 	p.mu.Lock()
-	if latest, ok := p.pendingCodes[code]; !ok || !latest.consumedAt.IsZero() {
+	currentSession, sessionKnown := p.sessions[pendingCode.sessionID]
+	sessionKnown = sessionKnown && !isSessionExpired(currentSession, time.Now())
+	if latest, ok := p.pendingCodes[code]; !ok || !latest.consumedAt.IsZero() || !sessionKnown {
 		for tokenValue, accessToken := range p.accessTokens {
 			if accessToken.code == code {
 				delete(p.accessTokens, tokenValue)

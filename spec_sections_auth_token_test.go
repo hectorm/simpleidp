@@ -498,6 +498,66 @@ func testAuthorizationServerObtainsEndUserConsentAuthorization(t *testing.T) {
 			t.Fatalf("expected invalid session error, got body=%s", raw)
 		}
 	})
+
+	t.Run("binds consent to the browser session that requested it", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users = append(config.Users, userConfig{
+			Label:    "BOB",
+			Username: "bob",
+			Password: "bob-password",
+			Sub:      "bob-subject",
+			Name:     "Bob Example",
+			Email:    "bob@example.com",
+		})
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("consent-session-binding")
+		request.Prompt = "consent"
+		consentBody := authorizeAndLoginExpectPage(t, provider, request)
+
+		for _, username := range []string{testUsername, "bob"} {
+			t.Run(username, func(t *testing.T) {
+				browser := newProviderBrowser(t, provider)
+				loginBody := readBody(t, browser.getAuthorize(t, authorizeParams(request)))
+				password := testPassword
+				if username == "bob" {
+					password = "bob-password"
+				}
+				otherConsentBody := readBody(t, submitLoginForm(t, browser, loginBody, username, password))
+				action, err := url.Parse(resolveProviderURL(t, provider.issuer, extractFormAction(t, consentBody)))
+				if err != nil {
+					t.Fatalf("failed to parse consent action: %v", err)
+				}
+				params := action.Query()
+				params.Set("state", "other-browser-state")
+				action.RawQuery = params.Encode()
+				resp := browser.postFormURL(t, action.String(), url.Values{
+					"confirm":    {"yes"},
+					"csrf_token": {extractHiddenInputValue(t, otherConsentBody, "csrf_token")},
+				}, "", false)
+				expectAuthorizationErrorRedirect(t, resp, http.StatusSeeOther, request.RedirectURI, "other-browser-state", provider.issuer, "invalid_request")
+			})
+		}
+
+		code := expectAuthorizationCodeRedirect(t, submitConsentForm(t, provider, consentBody, "yes"), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
+		token := exchangeAuthorizationCode(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         code,
+			CodeVerifier: request.Verifier,
+		})
+		if claims := verifyIDToken(t, provider, token.IDToken); claims.Sub != testSubject {
+			t.Fatalf("subject mismatch after consent: got %q, want %q", claims.Sub, testSubject)
+		}
+	})
+
+	t.Run("rejects consent after the browser session expires", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		request := newDefaultConfidentialAuthorizationRequest("consent-expired-session")
+		request.Prompt = "consent"
+		body := authorizeAndLoginExpectPage(t, provider, request)
+		provider.expireSessionMax(t)
+		expectAuthorizationErrorRedirect(t, submitConsentForm(t, provider, body, "yes"), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer, "invalid_request")
+	})
 }
 
 func testSuccessfulAuthenticationResponse(t *testing.T) {
@@ -758,6 +818,31 @@ func testTokenRequestValidation(t *testing.T) {
 		}), http.StatusBadRequest)
 		if errResp.Error != "invalid_grant" {
 			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_grant")
+		}
+	})
+
+	t.Run("rejects authorization codes after their browser session expires", func(t *testing.T) {
+		for _, phase := range []string{"before cleanup", "after cleanup"} {
+			t.Run(phase, func(t *testing.T) {
+				provider := startProvider(t, defaultProviderConfig())
+				request := newDefaultConfidentialAuthorizationRequest("code-expired-session")
+				authorization := authorizeAndLogin(t, provider, request)
+				provider.expireSessionMax(t)
+				if phase == "after cleanup" {
+					request.Prompt = "none"
+					expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "login_required")
+				}
+				errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					Code:         authorization.Code,
+					RedirectURI:  request.RedirectURI,
+					CodeVerifier: request.Verifier,
+				}), http.StatusBadRequest)
+				if errResp.Error != "invalid_grant" {
+					t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_grant")
+				}
+			})
 		}
 	})
 }
