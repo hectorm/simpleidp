@@ -144,6 +144,25 @@ func newDefaultConfidentialAuthorizationRequest(verifier string) authorizationRe
 	}
 }
 
+func fetchLogoutForm(t *testing.T, provider *providerProcess, params url.Values) []byte {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodGet, provider.endpoint("/end-session")+"?"+params.Encode(), nil)
+	if err != nil {
+		t.Fatalf("failed to create logout request: %v", err)
+	}
+
+	resp := provider.do(t, provider.redirectless, req)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("logout form status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+	}
+	if !strings.Contains(string(body), `data-testid="page-logout"`) {
+		t.Fatalf("expected logout confirmation form, got body=%s", body)
+	}
+	return body
+}
+
 func prepareRPInitiatedLogout(t *testing.T) rpInitiatedLogoutFixture {
 	t.Helper()
 
@@ -161,20 +180,11 @@ func prepareRPInitiatedLogout(t *testing.T) rpInitiatedLogoutFixture {
 		CodeVerifier: verifier,
 	})
 
-	req, err := http.NewRequest(http.MethodGet, provider.endpoint("/end-session")+"?"+url.Values{
+	body := fetchLogoutForm(t, provider, url.Values{
 		"id_token_hint":            {token.IDToken},
 		"post_logout_redirect_uri": {webClientPostLogoutRedirect},
 		"state":                    {"logout-state"},
-	}.Encode(), nil)
-	if err != nil {
-		t.Fatalf("failed to create logout request: %v", err)
-	}
-
-	resp := provider.do(t, provider.redirectless, req)
-	body := readBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("logout form status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
-	}
+	})
 
 	return rpInitiatedLogoutFixture{
 		provider:   provider,
@@ -315,17 +325,7 @@ func performLogoutWithBackchannel(t *testing.T, provider *providerProcess) token
 		CodeVerifier: verifier,
 	})
 
-	req, err := http.NewRequest(http.MethodGet, provider.endpoint("/end-session"), nil)
-	if err != nil {
-		t.Fatalf("failed to create logout request: %v", err)
-	}
-
-	resp := provider.do(t, provider.redirectless, req)
-	body := readBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("logout form status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
-	}
-
+	body := fetchLogoutForm(t, provider, url.Values{})
 	_ = readBody(t, submitConsentForm(t, provider, body, "yes"))
 	return token
 }

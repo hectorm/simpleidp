@@ -120,16 +120,18 @@ type user struct {
 
 type session struct {
 	username        string
+	clientIDs       map[string]struct{}
 	authenticatedAt time.Time
 	lastSeenAt      time.Time
 }
 
 type accessToken struct {
-	clientID string
-	username string
-	scope    string
-	code     string
-	expiry   time.Time
+	clientID  string
+	username  string
+	scope     string
+	code      string
+	sessionID string
+	expiry    time.Time
 }
 
 type refreshToken struct {
@@ -520,6 +522,9 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		redirectWithError(w, r, p.issuer, *redirectURI, state, "login_required", "Authenticated user does not match id_token_hint")
 		return
 	}
+	if sessionID != "" {
+		p.clearSession(w, sessionID)
+	}
 	authenticatedAt := time.Now()
 	sessionID = p.issueSession(w, authenticatedUser.username, authenticatedAt)
 	p.clearPreAuthSession(w)
@@ -821,7 +826,7 @@ func (p *identityProvider) handleEndSession(w http.ResponseWriter, r *http.Reque
 	}
 
 	sessionID := p.readSession(r)
-	currentSession, sessionKnown := p.resumeSession(sessionID)
+	_, sessionKnown := p.resumeSession(sessionID)
 
 	if !sessionKnown {
 		p.renderLogoutComplete(w, r, clientID, postLogoutRedirectURI, state)
@@ -843,52 +848,7 @@ func (p *identityProvider) handleEndSession(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	logoutUsername := currentSession.username
-	p.mu.Lock()
-	affectedClientIDs := map[string]struct{}{}
-	for tokenValue, accessToken := range p.accessTokens {
-		if accessToken.username != logoutUsername {
-			continue
-		}
-		if clientID != "" && accessToken.clientID != clientID {
-			continue
-		}
-		affectedClientIDs[accessToken.clientID] = struct{}{}
-		delete(p.accessTokens, tokenValue)
-	}
-	for codeValue, pendingCode := range p.pendingCodes {
-		if pendingCode.username != logoutUsername {
-			continue
-		}
-		if clientID != "" && pendingCode.clientID != clientID {
-			continue
-		}
-		affectedClientIDs[pendingCode.clientID] = struct{}{}
-		delete(p.pendingCodes, codeValue)
-	}
-	for tokenValue, refreshToken := range p.refreshTokens {
-		if refreshToken.username != logoutUsername {
-			continue
-		}
-		if clientID != "" && refreshToken.clientID != clientID {
-			continue
-		}
-		affectedClientIDs[refreshToken.clientID] = struct{}{}
-		delete(p.refreshTokens, tokenValue)
-	}
-	p.mu.Unlock()
-
-	logoutUser := p.users[logoutUsername]
-	for affectedClientID := range affectedClientIDs {
-		affectedClient, ok := p.clients[affectedClientID]
-		if !ok || affectedClient.backchannelLogoutURI.String() == "" {
-			continue
-		}
-		p.sendBackchannelLogout(affectedClient, logoutUser, sessionID)
-	}
-
 	p.clearSession(w, sessionID)
-
 	p.renderLogoutComplete(w, r, clientID, postLogoutRedirectURI, state)
 }
 
@@ -1486,11 +1446,12 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 	pendingCode.consumedAt = time.Now()
 	p.pendingCodes[code] = pendingCode
 	p.accessTokens[accessTokenValue] = accessToken{
-		clientID: client.id,
-		username: user.username,
-		scope:    pendingCode.scope,
-		code:     code,
-		expiry:   issuedAt.Add(accessTokenTTL),
+		clientID:  client.id,
+		username:  user.username,
+		scope:     pendingCode.scope,
+		code:      code,
+		sessionID: pendingCode.sessionID,
+		expiry:    issuedAt.Add(accessTokenTTL),
 	}
 	p.refreshTokens[refreshTokenValue] = refreshToken{
 		clientID:         client.id,
@@ -1502,6 +1463,7 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 		sessionStartedAt: issuedAt,
 		createdAt:        issuedAt,
 	}
+	currentSession.clientIDs[client.id] = struct{}{}
 	p.removeExpiredState()
 	p.mu.Unlock()
 
@@ -1568,9 +1530,9 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 	newRefreshTokenValue := rand.Text()
 
 	idToken, err := p.mintIDToken(user, client, pendingCode{
+		scope:           effectiveAccessScope,
 		sessionID:       storedRefreshToken.sessionID,
 		authenticatedAt: storedRefreshToken.authenticatedAt,
-		scope:           effectiveAccessScope,
 	}, newAccessTokenValue)
 	if err != nil {
 		http.Error(w, "Failed to mint ID token", http.StatusInternalServerError)
@@ -1597,11 +1559,12 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 	storedRefreshToken.consumedAt = time.Now()
 	p.refreshTokens[refreshTokenValue] = storedRefreshToken
 	p.accessTokens[newAccessTokenValue] = accessToken{
-		clientID: client.id,
-		username: user.username,
-		scope:    effectiveAccessScope,
-		code:     storedRefreshToken.code,
-		expiry:   issuedAt.Add(accessTokenTTL),
+		clientID:  client.id,
+		username:  user.username,
+		scope:     effectiveAccessScope,
+		code:      storedRefreshToken.code,
+		sessionID: storedRefreshToken.sessionID,
+		expiry:    issuedAt.Add(accessTokenTTL),
 	}
 	p.refreshTokens[newRefreshTokenValue] = refreshToken{
 		clientID:         client.id,
@@ -1689,7 +1652,12 @@ func (p *identityProvider) issueSession(w http.ResponseWriter, username string, 
 	cookieValue := rand.Text()
 	sessionID := p.sessionIDFromCookie(cookieValue)
 	p.mu.Lock()
-	p.sessions[sessionID] = session{username: username, authenticatedAt: authenticatedAt, lastSeenAt: authenticatedAt}
+	p.sessions[sessionID] = session{
+		username:        username,
+		clientIDs:       map[string]struct{}{},
+		authenticatedAt: authenticatedAt,
+		lastSeenAt:      authenticatedAt,
+	}
 	p.removeExpiredState()
 	p.mu.Unlock()
 	cookie := p.newCookie(sessionCookieBaseName) // #nosec G124
@@ -1699,15 +1667,41 @@ func (p *identityProvider) issueSession(w http.ResponseWriter, username string, 
 }
 
 func (p *identityProvider) clearSession(w http.ResponseWriter, sessionID string) {
-	if sessionID != "" {
-		p.mu.Lock()
-		delete(p.sessions, sessionID)
-		p.removeExpiredState()
-		p.mu.Unlock()
+	p.mu.Lock()
+	currentSession := p.sessions[sessionID]
+	delete(p.sessions, sessionID)
+	for k, v := range p.pendingCodes {
+		if v.sessionID == sessionID {
+			delete(p.pendingCodes, k)
+		}
 	}
+	for k, v := range p.accessTokens {
+		if v.sessionID == sessionID {
+			delete(p.accessTokens, k)
+		}
+	}
+	for k, v := range p.refreshTokens {
+		if v.sessionID == sessionID {
+			delete(p.refreshTokens, k)
+		}
+	}
+	p.mu.Unlock()
 	cookie := p.newCookie(sessionCookieBaseName) // #nosec G124
 	cookie.MaxAge = -1
 	http.SetCookie(w, cookie)
+
+	logoutUser := p.users[currentSession.username]
+	var wg sync.WaitGroup
+	for clientID := range currentSession.clientIDs {
+		client, ok := p.clients[clientID]
+		if !ok || client.backchannelLogoutURI.String() == "" {
+			continue
+		}
+		wg.Go(func() {
+			p.sendBackchannelLogout(client, logoutUser, sessionID)
+		})
+	}
+	wg.Wait()
 }
 
 func (p *identityProvider) resumeSession(sessionID string) (session, bool) {
@@ -1957,6 +1951,9 @@ func (p *identityProvider) mintIDToken(user user, client client, code pendingCod
 }
 
 func (p *identityProvider) mintLogoutToken(user user, client client, sessionID string) (string, error) {
+	if client.backchannelLogoutSessionRequired && sessionID == "" {
+		return "", errors.New("client requires a session ID in logout tokens")
+	}
 	now := time.Now().Unix()
 
 	header := map[string]string{
@@ -1975,7 +1972,7 @@ func (p *identityProvider) mintLogoutToken(user user, client client, sessionID s
 			"http://schemas.openid.net/event/backchannel-logout": map[string]any{},
 		},
 	}
-	if client.backchannelLogoutSessionRequired && sessionID != "" {
+	if sessionID != "" {
 		payload["sid"] = sessionID
 	}
 
