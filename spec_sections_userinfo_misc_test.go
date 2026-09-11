@@ -5,6 +5,7 @@ package simpleidp
 // OAuth 2.1 draft 15: https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-15.txt
 
 import (
+	"html"
 	"net/http"
 	"net/url"
 	"strings"
@@ -640,4 +641,273 @@ func testSigning(t *testing.T) {
 		t.Fatalf("kid mismatch: got %q, want %q", jwks.Keys[0].KeyID, header.Kid)
 	}
 	_ = verifyIDToken(t, provider, token.IDToken)
+}
+
+func testProfilePage(t *testing.T) {
+	t.Run("shows the current browser user at the issuer URL", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users[0].Password = "alice-profile-password"
+		config.Users = append(config.Users, userConfig{
+			Label:    "BOB",
+			Username: "bob",
+			Password: "bob-profile-password",
+			Sub:      "bob-subject",
+			Name:     `Bob <script>alert("profile")</script>`,
+			Email:    "bob@example.com",
+		})
+		provider := startProvider(t, config)
+
+		for _, user := range config.Users {
+			t.Run(user.Username, func(t *testing.T) {
+				browser := newProviderBrowser(t, provider)
+				request := newDefaultConfidentialAuthorizationRequest("profile-" + user.Username)
+				body := readBody(t, browser.getAuthorize(t, authorizeParams(request)))
+				expectAuthorizationCodeRedirect(t, submitLoginForm(t, browser, body, user.Username, user.Password), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
+
+				body = fetchProfilePage(t, browser)
+				for _, value := range []string{user.Name, user.Username, user.Email} {
+					if !strings.Contains(string(body), "<dd>"+html.EscapeString(value)+"</dd>") {
+						t.Fatalf("expected profile value %q, got body=%s", value, body)
+					}
+				}
+				for _, unexpected := range []string{"<script>", user.Password, webClientSecret} {
+					if strings.Contains(string(body), unexpected) {
+						t.Fatalf("unexpected profile content %q, got body=%s", unexpected, body)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("supports issuer paths on the profile page", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.IssuerPath = "/tenant-a"
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("profile-issuer-path")
+		_ = authorizeAndLogin(t, provider, request)
+		body := fetchProfilePage(t, provider)
+		if !strings.Contains(string(body), testName) || !strings.Contains(string(body), testEmail) {
+			t.Fatalf("expected signed-in profile, got body=%s", body)
+		}
+	})
+
+	t.Run("redirects to login without a live browser session", func(t *testing.T) {
+		for _, state := range []string{"missing", "expired"} {
+			t.Run(state, func(t *testing.T) {
+				provider := startProvider(t, defaultProviderConfig())
+				request := newDefaultConfidentialAuthorizationRequest("profile-session")
+				_ = authorizeAndLogin(t, provider, request)
+				browser := provider
+				if state == "missing" {
+					browser = newProviderBrowser(t, provider)
+				} else {
+					provider.expireSessionMax(t)
+				}
+
+				req, err := http.NewRequest(http.MethodGet, browser.endpoint("/"), nil)
+				if err != nil {
+					t.Fatalf("failed to create profile request: %v", err)
+				}
+				redirect := expectRedirect(t, browser.do(t, browser.redirectless, req), http.StatusFound)
+				assertRedirectTarget(t, redirect, "/login")
+				body := fetchLoginForm(t, browser)
+				for _, unexpected := range []string{testName, testEmail, `data-testid="details"`, `data-testid="page-profile"`} {
+					if strings.Contains(string(body), unexpected) {
+						t.Fatalf("unexpected signed-out login content %q, got body=%s", unexpected, body)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("does not serve the profile at unknown paths", func(t *testing.T) {
+		for _, issuerPath := range []string{"", "/tenant-a"} {
+			config := defaultProviderConfig()
+			config.IssuerPath = issuerPath
+			provider := startProvider(t, config)
+			for _, path := range []string{"/unknown", "/unknown/"} {
+				req, err := http.NewRequest(http.MethodGet, provider.endpoint(path), nil)
+				if err != nil {
+					t.Fatalf("failed to create request: %v", err)
+				}
+				resp := provider.do(t, provider.http, req)
+				body := readBody(t, resp)
+				if resp.StatusCode != http.StatusNotFound {
+					t.Fatalf("unknown path %q status mismatch: got %s, want %d; body=%s", req.URL.Path, resp.Status, http.StatusNotFound, body)
+				}
+			}
+		}
+	})
+}
+
+func testProfileLogin(t *testing.T) {
+	t.Run("signs in and returns to the profile", func(t *testing.T) {
+		for _, issuerPath := range []string{"", "/tenant-a"} {
+			config := defaultProviderConfig()
+			config.IssuerPath = issuerPath
+			provider := startProvider(t, config)
+			req, err := http.NewRequest(http.MethodGet, provider.endpoint(""), nil)
+			if err != nil {
+				t.Fatalf("failed to create profile request: %v", err)
+			}
+			resp := provider.do(t, provider.http, req)
+			body := readBody(t, resp)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("profile login status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+			}
+			if !strings.Contains(string(body), `data-testid="page-login"`) {
+				t.Fatalf("expected login form from profile URL, got body=%s", body)
+			}
+
+			redirect := expectRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther)
+			assertRedirectTarget(t, redirect, issuerPath+"/")
+			body = fetchProfilePage(t, provider)
+			if !strings.Contains(string(body), testName) || !strings.Contains(string(body), testEmail) {
+				t.Fatalf("expected signed-in profile, got body=%s", body)
+			}
+		}
+	})
+
+	t.Run("allows retrying after invalid credentials", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.IssuerPath = "/tenant-a"
+		provider := startProvider(t, config)
+		body := fetchLoginForm(t, provider)
+		resp := submitLoginForm(t, provider, body, testUsername, "wrong-password")
+		body = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("login status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if !strings.Contains(string(body), "Invalid username or password") {
+			t.Fatalf("expected invalid credentials message, got body=%s", body)
+		}
+		request := newDefaultConfidentialAuthorizationRequest("profile-login-invalid-credentials")
+		request.Prompt = "none"
+		expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "login_required")
+
+		redirect := expectRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther)
+		assertRedirectTarget(t, redirect, config.IssuerPath+"/")
+		_ = fetchProfilePage(t, provider)
+	})
+
+	t.Run("redirects signed-in browsers to the profile", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		request := newDefaultConfidentialAuthorizationRequest("profile-login-existing-session")
+		_ = authorizeAndLogin(t, provider, request)
+		sessionID := provider.currentSessionID(t)
+
+		req, err := http.NewRequest(http.MethodGet, provider.endpoint("/login"), nil)
+		if err != nil {
+			t.Fatalf("failed to create login request: %v", err)
+		}
+		redirect := expectRedirect(t, provider.do(t, provider.redirectless, req), http.StatusFound)
+		assertRedirectTarget(t, redirect, "/")
+		if got := provider.currentSessionID(t); got != sessionID {
+			t.Fatalf("session changed after visiting login: got %q, want %q", got, sessionID)
+		}
+	})
+
+	t.Run("reuses the profile session for authorization", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		body := fetchLoginForm(t, provider)
+		redirect := expectRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther)
+		assertRedirectTarget(t, redirect, "/")
+		sessionID := provider.currentSessionID(t)
+
+		request := newDefaultConfidentialAuthorizationRequest("profile-login-sso")
+		request.Prompt = "none"
+		code := expectAuthorizationCodeRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, provider.issuer)
+		token := exchangeAuthorizationCode(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         code,
+			CodeVerifier: request.Verifier,
+		})
+		claims := verifyIDToken(t, provider, token.IDToken)
+		if claims.Sub != testSubject {
+			t.Fatalf("subject mismatch: got %q, want %q", claims.Sub, testSubject)
+		}
+		if claims.Sid != sessionID {
+			t.Fatalf("session mismatch: got %q, want %q", claims.Sid, sessionID)
+		}
+	})
+
+	t.Run("rejects invalid login forms", func(t *testing.T) {
+		for _, invalid := range []string{"missing csrf token", "invalid csrf token", "other browser csrf token", "missing cookie", "duplicate username"} {
+			t.Run(invalid, func(t *testing.T) {
+				provider := startProvider(t, defaultProviderConfig())
+				body := fetchLoginForm(t, provider)
+				form := url.Values{
+					"username":   {testUsername},
+					"password":   {testPassword},
+					"csrf_token": {extractHiddenInputValue(t, body, "csrf_token")},
+				}
+				browser := provider
+				switch invalid {
+				case "missing csrf token":
+					form.Del("csrf_token")
+				case "invalid csrf token":
+					form.Set("csrf_token", "invalid")
+				case "other browser csrf token":
+					otherBrowser := newProviderBrowser(t, provider)
+					form.Set("csrf_token", extractHiddenInputValue(t, fetchLoginForm(t, otherBrowser), "csrf_token"))
+				case "missing cookie":
+					browser = newProviderBrowser(t, provider)
+				case "duplicate username":
+					form.Add("username", "bob")
+				}
+				resp := browser.postFormURL(t, browser.endpoint("/login"), form, "", false)
+				body = readBody(t, resp)
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Fatalf("invalid login form status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
+				}
+				_ = fetchLoginForm(t, browser)
+			})
+		}
+	})
+}
+
+func testProfileLogout(t *testing.T) {
+	config := defaultProviderConfig()
+	config.IssuerPath = "/tenant-a"
+	provider := startProvider(t, config)
+	request := newDefaultConfidentialAuthorizationRequest("profile-logout")
+	token := authorizeAndExchange(t, provider, request, tokenRequest{
+		ClientID:     request.ClientID,
+		ClientSecret: webClientSecret,
+		CodeVerifier: request.Verifier,
+	})
+	body := fetchProfilePage(t, provider)
+	action := resolveProviderURL(t, provider.issuer, extractFormAction(t, body))
+	resp := provider.postFormURL(t, action, url.Values{"confirm": {"yes"}}, "", false)
+	raw := readBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("logout status without CSRF token mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, raw)
+	}
+
+	resp = submitConsentForm(t, provider, body, "yes")
+	raw = readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("logout completion status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, raw)
+	}
+	if !strings.Contains(string(raw), "You have been signed out.") {
+		t.Fatalf("expected logged out message, got body=%s", raw)
+	}
+	req, err := http.NewRequest(http.MethodGet, provider.endpoint("/"), nil)
+	if err != nil {
+		t.Fatalf("failed to create profile request: %v", err)
+	}
+	redirect := expectRedirect(t, provider.do(t, provider.redirectless, req), http.StatusFound)
+	assertRedirectTarget(t, redirect, config.IssuerPath+"/login")
+	resp = provider.getUserInfoResponse(t, token.AccessToken)
+	body = readBody(t, resp)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("userinfo status after logout mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
+	}
+}
+
+func TestProfileImplementation(t *testing.T) {
+	t.Run("profile page", testProfilePage)
+	t.Run("profile login", testProfileLogin)
+	t.Run("profile logout", testProfileLogout)
 }

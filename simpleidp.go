@@ -248,6 +248,9 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 func newServer(listen string, provider *identityProvider) *http.Server {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("GET "+provider.base+"/{$}", provider.handleProfile)
+	mux.HandleFunc("GET "+provider.base+"/login", provider.handleLogin)
+	mux.HandleFunc("POST "+provider.base+"/login", provider.handleLogin)
 	mux.HandleFunc("GET "+provider.base+"/.well-known/openid-configuration", provider.handleDiscovery)
 	mux.HandleFunc("GET "+provider.base+"/authorize", provider.handleAuthorize)
 	mux.HandleFunc("POST "+provider.base+"/authorize", provider.handleAuthorize)
@@ -279,6 +282,55 @@ func newServer(listen string, provider *identityProvider) *http.Server {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+}
+
+func (p *identityProvider) handleProfile(w http.ResponseWriter, r *http.Request) {
+	sessionID := p.readSession(r)
+	currentSession, sessionKnown := p.resumeSession(sessionID)
+	if !sessionKnown {
+		http.Redirect(w, r, p.base+"/login", http.StatusFound)
+		return
+	}
+	p.renderProfilePage(w, r, p.users[currentSession.username], sessionID)
+}
+
+func (p *identityProvider) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		if _, sessionKnown := p.resumeSession(p.readSession(r)); sessionKnown {
+			http.Redirect(w, r, p.base+"/", http.StatusFound)
+			return
+		}
+		p.renderLoginForm(w, r, p.base+"/login", "", "")
+		return
+	}
+
+	if err := parseForm(w, r); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+	if !hasUniqueParams(r.PostForm) {
+		http.Error(w, "Duplicate parameter", http.StatusBadRequest)
+		return
+	}
+	preAuthID := p.readPreAuthSession(r)
+	if preAuthID == "" || !p.validateCSRFToken(r.PostForm.Get("csrf_token"), "preauth:"+preAuthID) {
+		http.Error(w, "Invalid or expired session", http.StatusBadRequest)
+		return
+	}
+
+	username := r.PostForm.Get("username")
+	password := r.PostForm.Get("password")
+	authenticatedUser, userKnown := p.authenticateEndUser(username, password)
+	if !userKnown {
+		p.renderLoginForm(w, r, p.base+"/login", username, "Invalid username or password")
+		return
+	}
+	if sessionID := p.readSession(r); sessionID != "" {
+		p.clearSession(w, sessionID)
+	}
+	p.issueSession(w, authenticatedUser.username, time.Now())
+	p.clearPreAuthSession(w)
+	http.Redirect(w, r, p.base+"/", http.StatusSeeOther)
 }
 
 func (p *identityProvider) handleDiscovery(w http.ResponseWriter, r *http.Request) {
@@ -509,13 +561,14 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	loginAction := p.base + "/authorize?" + filterFormParams(authorization.params, "username", "password", "code", "confirm").Encode()
 	if r.Method == http.MethodGet || (username == "" && password == "") {
-		p.renderLoginForm(w, r, authorization.params, "", "")
+		p.renderLoginForm(w, r, loginAction, "", "")
 		return
 	}
 	authenticatedUser, userKnown := p.authenticateEndUser(username, password)
 	if !userKnown {
-		p.renderLoginForm(w, r, authorization.params, username, "Invalid username or password")
+		p.renderLoginForm(w, r, loginAction, username, "Invalid username or password")
 		return
 	}
 	if hintedUser.sub != "" && authenticatedUser.sub != hintedUser.sub {
@@ -866,6 +919,11 @@ func (p *identityProvider) handleFavicon(w http.ResponseWriter, r *http.Request)
 
 // -------------------------------------------------------------------------- //
 
+type formPageDetail struct {
+	Label string
+	Value string
+}
+
 type formPageField struct {
 	Type         string
 	Name         string
@@ -896,6 +954,7 @@ type formPage struct {
 	DescribedBy string
 	TestID      string
 	Params      url.Values
+	Details     []formPageDetail
 	Fields      []formPageField
 	Buttons     []formPageButton
 	Links       []formPageLink
@@ -970,6 +1029,21 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 			font-size: .875rem;
 			color: var(--color-error);
 			background: var(--color-error-bg);
+		}
+		dl {
+			display: grid;
+			gap: 1rem;
+			margin-bottom: 1.5rem;
+			dt {
+				font-size: .875rem;
+				font-weight: 500;
+				color: var(--color-text-muted);
+			}
+			dd {
+				margin-top: .25rem;
+				font-size: 1rem;
+				overflow-wrap: anywhere;
+			}
 		}
 		form {
 			display: grid;
@@ -1053,6 +1127,16 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 		{{- if .Error}}
 		<p id="form-error" role="alert" aria-live="assertive" data-testid="error">{{.Error}}</p>
 		{{- end}}
+		{{- if .Details}}
+		<dl data-testid="details">
+			{{- range .Details}}
+			<div>
+				<dt>{{.Label}}</dt>
+				<dd>{{.Value}}</dd>
+			</div>
+			{{- end}}
+		</dl>
+		{{- end}}
 		{{- if or .Fields .Buttons}}
 		<form
 			method="POST"
@@ -1132,7 +1216,27 @@ func (p *identityProvider) renderFormPage(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Request, params url.Values, username, errorMsg string) {
+func (p *identityProvider) renderProfilePage(w http.ResponseWriter, r *http.Request, user user, sessionID string) {
+	csrfToken := p.issueCSRFToken("session:" + sessionID)
+	p.renderFormPage(w, r, formPage{
+		Title:  p.title,
+		Action: p.base + "/end-session",
+		TestID: "page-profile",
+		Params: url.Values{
+			"csrf_token": {csrfToken},
+		},
+		Details: []formPageDetail{
+			{Label: "Name", Value: user.name},
+			{Label: "Username", Value: user.username},
+			{Label: "Email", Value: user.email},
+		},
+		Buttons: []formPageButton{
+			{Name: "confirm", Value: "yes", Label: "Log out"},
+		},
+	})
+}
+
+func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Request, action, username, errorMsg string) {
 	preAuthID := p.readPreAuthSession(r)
 	if preAuthID == "" {
 		preAuthID = p.issuePreAuthSession(w)
@@ -1140,7 +1244,7 @@ func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Reques
 	csrfToken := p.issueCSRFToken("preauth:" + preAuthID)
 	p.renderFormPage(w, r, formPage{
 		Title:  p.title,
-		Action: p.base + "/authorize?" + filterFormParams(params, "username", "password", "code", "confirm").Encode(),
+		Action: action,
 		Error:  errorMsg,
 		TestID: "page-login",
 		Params: url.Values{

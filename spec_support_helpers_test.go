@@ -144,6 +144,50 @@ func newDefaultConfidentialAuthorizationRequest(verifier string) authorizationRe
 	}
 }
 
+func fetchProfilePage(t *testing.T, provider *providerProcess) []byte {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodGet, provider.endpoint(""), nil)
+	if err != nil {
+		t.Fatalf("failed to create profile request: %v", err)
+	}
+
+	resp := provider.do(t, provider.http, req)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("profile page status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("profile content type mismatch: got %q", got)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("profile cache control mismatch: got %q, want %q", got, "no-store")
+	}
+	if !strings.Contains(string(body), `data-testid="page-profile"`) {
+		t.Fatalf("expected profile page, got body=%s", body)
+	}
+	return body
+}
+
+func fetchLoginForm(t *testing.T, provider *providerProcess) []byte {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodGet, provider.endpoint("/login"), nil)
+	if err != nil {
+		t.Fatalf("failed to create login request: %v", err)
+	}
+
+	resp := provider.do(t, provider.redirectless, req)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login form status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+	}
+	if !strings.Contains(string(body), `data-testid="page-login"`) {
+		t.Fatalf("expected login form, got body=%s", body)
+	}
+	return body
+}
+
 func fetchLogoutForm(t *testing.T, provider *providerProcess, params url.Values) []byte {
 	t.Helper()
 

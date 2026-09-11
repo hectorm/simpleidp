@@ -12,6 +12,8 @@ All endpoints are derived from the issuer URL:
 
 | Endpoint      | URL                                         |
 | ------------- | ------------------------------------------- |
+| Profile       | `<ISSUER>/`                                |
+| Login         | `<ISSUER>/login`                           |
 | Discovery     | `<ISSUER>/.well-known/openid-configuration` |
 | Authorization | `<ISSUER>/authorize`                        |
 | Token         | `<ISSUER>/token`                            |

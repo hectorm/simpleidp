@@ -13,8 +13,6 @@ services:
     ports:
       - "8227:8227/tcp"
     environment:
-      # Login URL:  http://idp.localhost:8227/authorize?client_id=app&redirect_uri=http://app.localhost:3000/callback&response_type=code&scope=openid&code_challenge=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&code_challenge_method=S256
-      # Logout URL: http://idp.localhost:8227/end-session
       SIMPLE_IDP_ISSUER: "${SIMPLE_IDP_ISSUER:-http://idp.localhost:8227}"
       SIMPLE_IDP_TITLE: "${SIMPLE_IDP_TITLE:-Simple IdP}"
       SIMPLE_IDP_CLIENT_APP_ID: "${SIMPLE_IDP_CLIENT_ID:-app}"
