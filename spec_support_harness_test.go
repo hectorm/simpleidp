@@ -95,6 +95,9 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 			prefix+"EMAIL="+user.Email,
 			prefix+"EMAIL_VERIFIED="+strconv.FormatBool(user.EmailVerified),
 		)
+		if user.PreferredUsername != "" {
+			env = append(env, prefix+"PREFERRED_USERNAME="+user.PreferredUsername)
+		}
 		if user.Profile != "" {
 			env = append(env, prefix+"PROFILE="+user.Profile)
 		}

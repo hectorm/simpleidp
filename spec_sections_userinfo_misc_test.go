@@ -32,6 +32,82 @@ func testStandardClaims(t *testing.T) {
 			t.Fatalf("unexpected email claims: %#v", claims)
 		}
 	})
+
+	t.Run("supports configured preferred usernames without creating extra users", func(t *testing.T) {
+		for _, label := range []string{"ALICE", "ALICE_PREFERRED", "ALICE_PREFERRED_PREFERRED"} {
+			t.Run(label, func(t *testing.T) {
+				config := defaultProviderConfig()
+				config.Users[0].Label = label
+				config.Users[0].PreferredUsername = "alice.display"
+				provider := startProvider(t, config)
+				request := newDefaultConfidentialAuthorizationRequest("configured-preferred-username")
+				token := authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					CodeVerifier: request.Verifier,
+				})
+				claims := verifyIDToken(t, provider, token.IDToken)
+				userInfo := fetchUserInfo(t, provider, token.AccessToken)
+				if claims.PreferredUsername != "alice.display" || userInfo.PreferredUsername != "alice.display" {
+					t.Fatalf("preferred_username mismatch: id_token=%q, userinfo=%q", claims.PreferredUsername, userInfo.PreferredUsername)
+				}
+			})
+		}
+	})
+
+	t.Run("keeps overlapping user labels distinct regardless of configuration order", func(t *testing.T) {
+		for _, order := range []string{"parent first", "child first"} {
+			t.Run(order, func(t *testing.T) {
+				config := defaultProviderConfig()
+				config.Users[0].PreferredUsername = "bob"
+				config.Users = append(config.Users, userConfig{
+					Label:    "ALICE_PREFERRED",
+					Username: "bob",
+					Password: "bob-password",
+				})
+				if order == "child first" {
+					config.Users[0], config.Users[1] = config.Users[1], config.Users[0]
+				}
+				provider := startProvider(t, config)
+				if len(provider.idp.users) != 2 {
+					t.Fatalf("expected 2 users, got %d", len(provider.idp.users))
+				}
+				for _, username := range []string{testUsername, "bob"} {
+					user, ok := provider.idp.users[username]
+					if !ok || user.preferredUsername != "bob" {
+						t.Fatalf("preferred username mismatch for %q: got %q, want %q", username, user.preferredUsername, "bob")
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("rejects incomplete user configuration for every supported field", func(t *testing.T) {
+		for _, field := range []string{
+			"USERNAME", "PASSWORD", "SUB", "NAME", "PREFERRED_USERNAME", "EMAIL",
+			"EMAIL_VERIFIED", "PROFILE", "PICTURE", "LOCALE", "GROUPS", "ROLES",
+		} {
+			t.Run(field, func(t *testing.T) {
+				environ := []string{
+					"SIMPLE_IDP_USER_ALICE_USERNAME=" + testUsername,
+					"SIMPLE_IDP_USER_ALICE_PASSWORD=" + testPassword,
+					"SIMPLE_IDP_USER_BOB_" + field + "=bob",
+				}
+				_, err := loadUsers(environ, func(name string) string {
+					for _, item := range environ {
+						key, value, _ := strings.Cut(item, "=")
+						if key == name {
+							return value
+						}
+					}
+					return ""
+				})
+				if err == nil || !strings.Contains(err.Error(), "incomplete user configuration") {
+					t.Fatalf("expected incomplete user configuration error, got %v", err)
+				}
+			})
+		}
+	})
 }
 
 func testUserInfoRequest(t *testing.T) {

@@ -2345,15 +2345,41 @@ func isValidEmail(email string) bool {
 
 // -------------------------------------------------------------------------- //
 
-func scanLabels(environ []string, prefix, suffix string) map[string]struct{} {
+func scanLabels(environ []string, prefix string, suffixes ...string) map[string]struct{} {
 	labels := map[string]struct{}{}
+	var ambiguousLabels [][]string
 	for _, env := range environ {
 		key, _, ok := strings.Cut(env, "=")
-		if !ok || !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, suffix) {
+		if !ok || !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		label := key[len(prefix) : len(key)-len(suffix)]
-		if label != "" {
+		var matches []string
+		for _, suffix := range suffixes {
+			label, ok := strings.CutSuffix(key[len(prefix):], suffix)
+			if ok && label != "" {
+				matches = append(matches, label)
+			}
+		}
+		switch len(matches) {
+		case 0:
+		case 1:
+			labels[matches[0]] = struct{}{}
+		default:
+			ambiguousLabels = append(ambiguousLabels, matches)
+		}
+	}
+	for _, matches := range ambiguousLabels {
+		label := matches[0]
+		known := false
+		for _, candidate := range matches {
+			if _, known = labels[candidate]; known {
+				break
+			}
+			if len(candidate) < len(label) {
+				label = candidate
+			}
+		}
+		if !known {
 			labels[label] = struct{}{}
 		}
 	}
@@ -2363,8 +2389,17 @@ func scanLabels(environ []string, prefix, suffix string) map[string]struct{} {
 func loadClients(environ []string, lookupEnv func(string) string) (map[string]client, error) {
 	const prefix = "SIMPLE_IDP_CLIENT_"
 
+	labels := scanLabels(environ, prefix,
+		"_ID",
+		"_SECRET",
+		"_REDIRECT_URL",
+		"_POST_LOGOUT_REDIRECT_URL",
+		"_BACKCHANNEL_LOGOUT_URI",
+		"_BACKCHANNEL_LOGOUT_SESSION_REQUIRED",
+	)
+
 	clients := map[string]client{}
-	for label := range scanLabels(environ, prefix, "_ID") {
+	for label := range labels {
 		id := lookupEnv(prefix + label + "_ID")
 		secret := lookupEnv(prefix + label + "_SECRET")
 		rawRedirectURL := lookupEnv(prefix + label + "_REDIRECT_URL")
@@ -2424,10 +2459,24 @@ func loadClients(environ []string, lookupEnv func(string) string) (map[string]cl
 func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user, error) {
 	const prefix = "SIMPLE_IDP_USER_"
 
+	labels := scanLabels(environ, prefix,
+		"_USERNAME",
+		"_PASSWORD",
+		"_SUB",
+		"_NAME",
+		"_PREFERRED_USERNAME",
+		"_EMAIL",
+		"_EMAIL_VERIFIED",
+		"_PROFILE",
+		"_PICTURE",
+		"_LOCALE",
+		"_GROUPS",
+		"_ROLES",
+	)
+
 	users := map[string]user{}
 	subs := map[string]struct{}{}
-
-	for label := range scanLabels(environ, prefix, "_USERNAME") {
+	for label := range labels {
 		username := envOr(lookupEnv, prefix+label+"_USERNAME", "")
 		password := envOr(lookupEnv, prefix+label+"_PASSWORD", "")
 		sub := envOr(lookupEnv, prefix+label+"_SUB", username)

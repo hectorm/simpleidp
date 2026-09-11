@@ -52,17 +52,18 @@ type clientConfig struct {
 }
 
 type userConfig struct {
-	Label         string
-	Username      string
-	Password      string
-	Sub           string
-	Name          string
-	Email         string
-	EmailVerified bool
-	Profile       string
-	Picture       string
-	Locale        string
-	Groups        []string
+	Label             string
+	Username          string
+	Password          string
+	Sub               string
+	Name              string
+	PreferredUsername string
+	Email             string
+	EmailVerified     bool
+	Profile           string
+	Picture           string
+	Locale            string
+	Groups            []string
 }
 
 type authorizationRequest struct {

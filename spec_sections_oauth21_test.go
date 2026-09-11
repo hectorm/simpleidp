@@ -48,6 +48,34 @@ func testOAuth21ClientTypes(t *testing.T) {
 func testOAuth21ClientIdentifier(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 
+	t.Run("rejects incomplete client configuration for every supported field", func(t *testing.T) {
+		for _, field := range []string{
+			"ID", "SECRET", "REDIRECT_URL", "POST_LOGOUT_REDIRECT_URL",
+			"BACKCHANNEL_LOGOUT_URI", "BACKCHANNEL_LOGOUT_SESSION_REQUIRED",
+		} {
+			t.Run(field, func(t *testing.T) {
+				environ := []string{
+					"SIMPLE_IDP_CLIENT_WEB_ID=" + webClientID,
+					"SIMPLE_IDP_CLIENT_WEB_SECRET=" + webClientSecret,
+					"SIMPLE_IDP_CLIENT_WEB_REDIRECT_URL=" + webClientRedirect,
+					"SIMPLE_IDP_CLIENT_OTHER_" + field + "=other",
+				}
+				_, err := loadClients(environ, func(name string) string {
+					for _, item := range environ {
+						key, value, _ := strings.Cut(item, "=")
+						if key == name {
+							return value
+						}
+					}
+					return ""
+				})
+				if err == nil || !strings.Contains(err.Error(), "incomplete client configuration") {
+					t.Fatalf("expected incomplete client configuration error, got %v", err)
+				}
+			})
+		}
+	})
+
 	t.Run("rejects unknown clients at the authorization endpoint", func(t *testing.T) {
 		request := newDefaultConfidentialAuthorizationRequest("oauth21-client-identifier-auth")
 		request.ClientID = "unknown-client"
