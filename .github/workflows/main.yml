@@ -23,7 +23,10 @@ jobs:
           REPOSITORY: "${{ github.repository }}"
           TOKEN: "${{ secrets.GITHUB_TOKEN }}"
         run: |
-          git clone --depth=1 https://x-access-token:${TOKEN:?}@github.com/${REPOSITORY:?}.git ./
+          git init ./
+          git remote add origin "https://x-access-token:${TOKEN:?}@github.com/${REPOSITORY:?}.git"
+          git fetch --depth=1 origin "${GITHUB_SHA:?}"
+          git checkout --detach FETCH_HEAD
       - name: "Test"
         run: |
           docker compose up --detach --wait --wait-timeout 60
