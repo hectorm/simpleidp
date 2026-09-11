@@ -391,6 +391,26 @@ func newHTTPClient(followRedirects bool, jar http.CookieJar) *http.Client {
 	return client
 }
 
+func newProviderBrowser(t *testing.T, provider *providerProcess) *providerProcess {
+	t.Helper()
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("failed to create browser cookie jar: %v", err)
+	}
+	browser := &providerProcess{
+		issuer:       provider.issuer,
+		idp:          provider.idp,
+		redirectless: newHTTPClient(false, jar),
+		http:         newHTTPClient(true, jar),
+	}
+	t.Cleanup(func() {
+		browser.http.CloseIdleConnections()
+		browser.redirectless.CloseIdleConnections()
+	})
+	return browser
+}
+
 func fetchDiscovery(t *testing.T, provider *providerProcess) discoveryDocument {
 	t.Helper()
 
@@ -709,7 +729,7 @@ func (p *providerProcess) currentSessionID(t *testing.T) string {
 	}
 	for _, cookie := range p.http.Jar.Cookies(issuerURL) {
 		if cookie.Name == p.idp.cookieName(sessionCookieBaseName) {
-			return cookie.Value
+			return p.idp.sessionIDFromCookie(cookie.Value)
 		}
 	}
 	t.Fatalf("session cookie %q not found", p.idp.cookieName(sessionCookieBaseName))

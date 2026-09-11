@@ -1669,17 +1669,18 @@ func (p *identityProvider) clearPreAuthSession(w http.ResponseWriter) {
 }
 
 func (p *identityProvider) readSession(r *http.Request) string {
-	return p.readCookie(r, sessionCookieBaseName)
+	return p.sessionIDFromCookie(p.readCookie(r, sessionCookieBaseName))
 }
 
 func (p *identityProvider) issueSession(w http.ResponseWriter, username string, authenticatedAt time.Time) string {
-	sessionID := rand.Text()
+	cookieValue := rand.Text()
+	sessionID := p.sessionIDFromCookie(cookieValue)
 	p.mu.Lock()
 	p.sessions[sessionID] = session{username: username, authenticatedAt: authenticatedAt, lastSeenAt: authenticatedAt}
 	p.removeExpiredState()
 	p.mu.Unlock()
 	cookie := p.newCookie(sessionCookieBaseName) // #nosec G124
-	cookie.Value = sessionID
+	cookie.Value = cookieValue
 	http.SetCookie(w, cookie)
 	return sessionID
 }
@@ -1731,6 +1732,14 @@ func (p *identityProvider) canReuseSession(currentSession session, hintedUser to
 		return false
 	}
 	return true
+}
+
+func (p *identityProvider) sessionIDFromCookie(value string) string {
+	if value == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(value))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
 // -------------------------------------------------------------------------- //

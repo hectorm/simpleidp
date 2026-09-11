@@ -415,6 +415,32 @@ func testBackChannelLogoutResponse(t *testing.T) {
 }
 
 func testBackChannelLogoutSecurity(t *testing.T) {
+	t.Run("does not accept an id token sid as a browser authentication cookie", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		request := newDefaultConfidentialAuthorizationRequest("sid-is-not-a-cookie")
+		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+		claims := verifyIDToken(t, provider, token.IDToken)
+		if claims.Sid == "" {
+			t.Fatal("expected a session identifier in the id token")
+		}
+		browser := newProviderBrowser(t, provider)
+		request.ClientID = nativeClientID
+		request.RedirectURI = nativeClientRedirect
+		request.Prompt = "none"
+		req, err := http.NewRequest(http.MethodGet, provider.endpoint("/authorize")+"?"+authorizeParams(request).Encode(), nil)
+		if err != nil {
+			t.Fatalf("failed to create authorization request: %v", err)
+		}
+		req.Header.Set("Cookie", provider.idp.cookieName(sessionCookieBaseName)+"="+claims.Sid)
+		resp := browser.do(t, browser.redirectless, req)
+		expectAuthorizationErrorRedirect(t, resp, http.StatusFound, request.RedirectURI, request.State, provider.issuer, "login_required")
+		expectAuthorizationCodeRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, provider.issuer)
+	})
+
 	t.Run("logout token has a unique jti for each request", func(t *testing.T) {
 		receiver, receiverURL := startBackchannelLogoutReceiver(t)
 		provider := startProvider(t, backchannelProviderConfig(receiverURL, false))
