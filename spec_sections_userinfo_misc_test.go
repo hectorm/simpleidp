@@ -5,6 +5,12 @@ package simpleidp
 // OAuth 2.1 draft 15: https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-15.txt
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
+	"fmt"
 	"html"
 	"net/http"
 	"net/url"
@@ -641,6 +647,42 @@ func testSigning(t *testing.T) {
 		t.Fatalf("kid mismatch: got %q, want %q", jwks.Keys[0].KeyID, header.Kid)
 	}
 	_ = verifyIDToken(t, provider, token.IDToken)
+
+	t.Run("enforces the minimum RSA signing key size for imported keys", func(t *testing.T) {
+		for _, bits := range []int{1024, 2048} {
+			key, err := rsa.GenerateKey(rand.Reader, bits)
+			if err != nil {
+				t.Fatal(err)
+			}
+			der, err := x509.MarshalPKCS8PrivateKey(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, source := range []string{"KEY_FILE", "KEY_B64"} {
+				t.Run(fmt.Sprintf("%d/%s", bits, source), func(t *testing.T) {
+					value := "key.pem"
+					if source == "KEY_B64" {
+						value = base64.StdEncoding.EncodeToString(der)
+					}
+					loaded, err := loadOrGenerateKey(func(name string) string {
+						if name == "SIMPLE_IDP_"+source {
+							return value
+						}
+						return ""
+					}, func(string) ([]byte, error) {
+						return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
+					})
+					if bits < 2048 {
+						if err == nil || !strings.Contains(err.Error(), "at least 2048 bits") {
+							t.Fatalf("expected minimum key size error, got %v", err)
+						}
+					} else if err != nil || loaded.N.Cmp(key.N) != 0 {
+						t.Fatalf("failed to load compliant RSA key: %v", err)
+					}
+				})
+			}
+		}
+	})
 }
 
 func testProfilePage(t *testing.T) {

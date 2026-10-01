@@ -2707,6 +2707,9 @@ func parseRSAPKCS8(der []byte, source string) (*rsa.PrivateKey, error) {
 	if !ok {
 		return nil, fmt.Errorf("key from %q is not RSA", source)
 	}
+	if key.N.BitLen() < 2048 {
+		return nil, fmt.Errorf("RSA key from %q must be at least 2048 bits", source)
+	}
 	slog.LogAttrs(context.Background(), slog.LevelInfo, "loaded RSA key", slog.String("source", source))
 	return key, nil
 }
