@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testOAuth21ClientTypes(t *testing.T) {
@@ -607,6 +608,104 @@ func testOAuth21ReuseOfAuthorizationCodes(t *testing.T) {
 		body := readBody(t, resp)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+	})
+
+	t.Run("revokes grants after replay beyond the code redemption lifetime", func(t *testing.T) {
+		for _, phase := range []string{"before cleanup", "after cleanup"} {
+			t.Run(phase, func(t *testing.T) {
+				provider := startProvider(t, defaultProviderConfig())
+				request := newDefaultConfidentialAuthorizationRequest("late-code-replay")
+				request.ClientID = nativeClientID
+				request.RedirectURI = nativeClientRedirect
+				authorization := authorizeAndLogin(t, provider, request)
+				exchange := tokenRequest{
+					ClientID: nativeClientID, Code: authorization.Code,
+					RedirectURI: request.RedirectURI, CodeVerifier: request.Verifier,
+				}
+				token := exchangeAuthorizationCode(t, provider, exchange)
+				provider.expireAuthorizationCode(t, authorization.Code)
+				if phase == "after cleanup" {
+					_ = introspectToken(t, provider, introspectionRequest{
+						ClientID: webClientID, ClientSecret: webClientSecret, Token: "unknown",
+					})
+				}
+
+				invalid := exchange
+				invalid.CodeVerifier = pkceVerifier("wrong-verifier")
+				expectJSONError(t, provider.postToken(t, invalid), http.StatusBadRequest)
+				refreshed := exchangeRefreshToken(t, provider, tokenRequest{
+					ClientID: nativeClientID, RefreshToken: token.RefreshToken,
+				})
+				errResponse := expectJSONError(t, provider.postToken(t, exchange), http.StatusBadRequest)
+				if errResponse.Error != "invalid_grant" {
+					t.Fatalf("replay error = %q, want invalid_grant", errResponse.Error)
+				}
+				for _, access := range []string{token.AccessToken, refreshed.AccessToken} {
+					resp := provider.getUserInfoResponse(t, access)
+					readBody(t, resp)
+					if resp.StatusCode != http.StatusUnauthorized {
+						t.Fatalf("access token survived code replay: %s", resp.Status)
+					}
+				}
+				errResponse = expectJSONError(t, provider.postToken(t, tokenRequest{
+					GrantType: "refresh_token", ClientID: nativeClientID, RefreshToken: refreshed.RefreshToken,
+				}), http.StatusBadRequest)
+				if errResponse.Error != "invalid_grant" {
+					t.Fatalf("refresh error = %q, want invalid_grant", errResponse.Error)
+				}
+			})
+		}
+	})
+
+	t.Run("retains replay detection through the final access token lifetime", func(t *testing.T) {
+		for _, phase := range []string{"last access token active", "all tokens expired"} {
+			t.Run(phase, func(t *testing.T) {
+				provider := startProvider(t, defaultProviderConfig())
+				request := newDefaultConfidentialAuthorizationRequest("replay-final-access-token")
+				authorization := authorizeAndLogin(t, provider, request)
+				exchange := tokenRequest{
+					ClientID:     webClientID,
+					ClientSecret: webClientSecret,
+					Code:         authorization.Code,
+					CodeVerifier: request.Verifier,
+				}
+				token := exchangeAuthorizationCode(t, provider, exchange)
+				age := refreshTokenMaxTTL + time.Minute
+				if phase == "all tokens expired" {
+					age += accessTokenTTL
+					provider.expireAccessToken(t, token.AccessToken)
+				}
+				provider.ageConsumedAuthorizationCode(t, authorization.Code, age)
+				provider.expireRefreshTokenMax(t, token.RefreshToken)
+				info := introspectToken(t, provider, introspectionRequest{
+					ClientID:     webClientID,
+					ClientSecret: webClientSecret,
+					Token:        token.AccessToken,
+				})
+				if info.Active != (phase == "last access token active") {
+					t.Fatalf("unexpected final access token activity: %t", info.Active)
+				}
+				if phase == "all tokens expired" {
+					provider.idp.mu.Lock()
+					_, retained := provider.idp.pendingCodes[authorization.Code]
+					provider.idp.mu.Unlock()
+					if retained {
+						t.Fatal("consumed code remained after its replay detection window")
+					}
+					return
+				}
+
+				errResp := expectJSONError(t, provider.postToken(t, exchange), http.StatusBadRequest)
+				if errResp.Error != "invalid_grant" {
+					t.Fatalf("replay error = %q, want invalid_grant", errResp.Error)
+				}
+				resp := provider.getUserInfoResponse(t, token.AccessToken)
+				readBody(t, resp)
+				if resp.StatusCode != http.StatusUnauthorized {
+					t.Fatalf("final access token survived code replay: %s", resp.Status)
+				}
+			})
 		}
 	})
 }

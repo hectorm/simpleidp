@@ -1938,6 +1938,9 @@ func isRefreshTokenExpired(token refreshToken, now time.Time) bool {
 }
 
 func isPendingCodeExpired(code pendingCode, now time.Time) bool {
+	if !code.consumedAt.IsZero() {
+		return now.Sub(code.consumedAt) > refreshTokenMaxTTL+accessTokenTTL
+	}
 	ttl := codeTTL
 	if code.consentRequired {
 		ttl = loginActionTTL

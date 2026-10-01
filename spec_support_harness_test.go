@@ -768,6 +768,21 @@ func (p *providerProcess) expireAuthorizationCode(t *testing.T, code string) {
 	p.idp.pendingCodes[code] = pending
 }
 
+func (p *providerProcess) ageConsumedAuthorizationCode(t *testing.T, code string, age time.Duration) {
+	t.Helper()
+
+	p.idp.mu.Lock()
+	defer p.idp.mu.Unlock()
+
+	pending, ok := p.idp.pendingCodes[code]
+	if !ok || pending.consumedAt.IsZero() {
+		t.Fatalf("consumed authorization code %q not found", code)
+	}
+	pending.consumedAt = time.Now().Add(-age)
+	pending.createdAt = pending.consumedAt
+	p.idp.pendingCodes[code] = pending
+}
+
 func (p *providerProcess) expireAccessToken(t *testing.T, token string) {
 	t.Helper()
 
