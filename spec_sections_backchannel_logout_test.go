@@ -601,6 +601,7 @@ func testBackChannelLogoutRememberingRPs(t *testing.T) {
 				} else {
 					provider.expireAccessToken(t, token.AccessToken)
 					provider.expireRefreshTokenIdle(t, token.RefreshToken)
+					provider.ageConsumedAuthorizationCode(t, authorization.Code, refreshTokenMaxTTL+accessTokenTTL+time.Minute)
 				}
 
 				body := fetchLogoutForm(t, provider, url.Values{})
@@ -618,6 +619,130 @@ func testBackChannelLogoutRememberingRPs(t *testing.T) {
 				claims := verifyLogoutToken(t, provider, requests[0].rawToken)
 				if claims.Aud != webClientID {
 					t.Fatalf("logout audience mismatch: got %q, want %q", claims.Aud, webClientID)
+				}
+			})
+		}
+	})
+
+	t.Run("logs out expired browser sessions", func(t *testing.T) {
+		for _, expiry := range []string{"idle", "maximum"} {
+			for _, phase := range []string{"before cleanup", "after cleanup"} {
+				t.Run(expiry+"/"+phase, func(t *testing.T) {
+					receiver, uri := startBackchannelLogoutReceiver(t)
+					provider := startProvider(t, backchannelProviderConfig(uri, false))
+					request := newDefaultConfidentialAuthorizationRequest("expired-session-logout")
+					token := authorizeAndExchange(t, provider, request, tokenRequest{
+						ClientSecret: webClientSecret,
+						CodeVerifier: request.Verifier,
+					})
+					sessionID := provider.currentSessionID(t)
+
+					if expiry == "idle" {
+						provider.expireSessionIdle(t)
+					} else {
+						provider.expireSessionMax(t)
+					}
+
+					if phase == "after cleanup" {
+						request.Prompt = "none"
+						expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound,
+							request.RedirectURI, request.State, provider.issuer, "login_required")
+					}
+
+					body := fetchLogoutForm(t, provider, url.Values{})
+					if len(receiver.receivedRequests()) != 0 {
+						t.Fatal("logout must wait for confirmation")
+					}
+					invalid := provider.postFormURL(t, provider.endpoint("/end-session"), url.Values{
+						"confirm": {"yes"}, "csrf_token": {"invalid"},
+					}, "", false)
+					readBody(t, invalid)
+					if invalid.StatusCode != http.StatusBadRequest {
+						t.Fatalf("expired-session logout accepted invalid CSRF token: %s", invalid.Status)
+					}
+
+					refreshed := exchangeRefreshToken(t, provider, tokenRequest{
+						ClientID: webClientID, ClientSecret: webClientSecret, RefreshToken: token.RefreshToken,
+					})
+					result := readBody(t, submitConsentForm(t, provider, body, "yes"))
+					if !strings.Contains(string(result), "You have been signed out.") {
+						t.Fatalf("unexpected logout response: %s", result)
+					}
+					notifications := receiver.receivedRequests()
+					if len(notifications) != 1 {
+						t.Fatalf("got %d back-channel notifications, want 1", len(notifications))
+					}
+					if claims := verifyLogoutToken(t, provider, notifications[0].rawToken); claims.Sid != sessionID {
+						t.Fatalf("logout sid = %q, want %q", claims.Sid, sessionID)
+					}
+					for _, access := range []string{token.AccessToken, refreshed.AccessToken} {
+						resp := provider.getUserInfoResponse(t, access)
+						readBody(t, resp)
+						if resp.StatusCode != http.StatusUnauthorized {
+							t.Fatalf("access token survived logout: %s", resp.Status)
+						}
+					}
+					errResponse := expectJSONError(t, provider.postToken(t, tokenRequest{
+						GrantType: "refresh_token", ClientID: webClientID,
+						ClientSecret: webClientSecret, RefreshToken: refreshed.RefreshToken,
+					}), http.StatusBadRequest)
+					if errResponse.Error != "invalid_grant" {
+						t.Fatalf("refresh error = %q, want invalid_grant", errResponse.Error)
+					}
+				})
+			}
+		}
+	})
+
+	t.Run("retains logout metadata through the final access token lifetime", func(t *testing.T) {
+		for _, phase := range []string{"last access token active", "all tokens expired"} {
+			t.Run(phase, func(t *testing.T) {
+				receiver, uri := startBackchannelLogoutReceiver(t)
+				provider := startProvider(t, backchannelProviderConfig(uri, true))
+				request := newDefaultConfidentialAuthorizationRequest("logout-final-access-token")
+				token := authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientSecret: webClientSecret,
+					CodeVerifier: request.Verifier,
+				})
+				sessionID := provider.currentSessionID(t)
+				age := sessionMaxTTL + refreshTokenMaxTTL + time.Minute
+				if phase == "all tokens expired" {
+					age += accessTokenTTL
+					provider.expireAccessToken(t, token.AccessToken)
+				}
+				provider.ageSession(t, age, age)
+				provider.expireRefreshTokenMax(t, token.RefreshToken)
+				info := introspectToken(t, provider, introspectionRequest{
+					ClientID:     webClientID,
+					ClientSecret: webClientSecret,
+					Token:        token.AccessToken,
+				})
+				if info.Active != (phase == "last access token active") {
+					t.Fatalf("unexpected final access token activity: %t", info.Active)
+				}
+				if phase == "all tokens expired" {
+					provider.idp.mu.Lock()
+					_, retained := provider.idp.sessions[sessionID]
+					provider.idp.mu.Unlock()
+					if retained {
+						t.Fatal("logout metadata remained after its retention window")
+					}
+					return
+				}
+
+				body := fetchLogoutForm(t, provider, url.Values{})
+				_ = readBody(t, submitConsentForm(t, provider, body, "yes"))
+				notifications := receiver.receivedRequests()
+				if len(notifications) != 1 {
+					t.Fatalf("got %d back-channel notifications, want 1", len(notifications))
+				}
+				if claims := verifyLogoutToken(t, provider, notifications[0].rawToken); claims.Sid != sessionID {
+					t.Fatalf("logout sid = %q, want %q", claims.Sid, sessionID)
+				}
+				resp := provider.getUserInfoResponse(t, token.AccessToken)
+				readBody(t, resp)
+				if resp.StatusCode != http.StatusUnauthorized {
+					t.Fatalf("final access token survived logout: %s", resp.Status)
 				}
 			})
 		}

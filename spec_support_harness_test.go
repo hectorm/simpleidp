@@ -738,6 +738,16 @@ func (p *providerProcess) currentSessionID(t *testing.T) string {
 
 func (p *providerProcess) expireSessionMax(t *testing.T) {
 	t.Helper()
+	p.ageSession(t, sessionMaxTTL+time.Minute, 0)
+}
+
+func (p *providerProcess) expireSessionIdle(t *testing.T) {
+	t.Helper()
+	p.ageSession(t, sessionIdleTTL+time.Minute, sessionIdleTTL+time.Minute)
+}
+
+func (p *providerProcess) ageSession(t *testing.T, authenticatedAge, idleAge time.Duration) {
+	t.Helper()
 
 	sessionID := p.currentSessionID(t)
 
@@ -748,8 +758,9 @@ func (p *providerProcess) expireSessionMax(t *testing.T) {
 	if !ok {
 		t.Fatalf("session %q not found", sessionID)
 	}
-	currentSession.authenticatedAt = time.Now().Add(-sessionMaxTTL - time.Minute)
-	currentSession.lastSeenAt = time.Now()
+	now := time.Now()
+	currentSession.authenticatedAt = now.Add(-authenticatedAge)
+	currentSession.lastSeenAt = now.Add(-idleAge)
 	p.idp.sessions[sessionID] = currentSession
 }
 

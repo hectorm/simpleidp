@@ -873,6 +873,11 @@ func (p *identityProvider) handleEndSession(w http.ResponseWriter, r *http.Reque
 
 	sessionID := p.readSession(r)
 	_, sessionKnown := p.resumeSession(sessionID)
+	if !sessionKnown {
+		p.mu.Lock()
+		_, sessionKnown = p.sessions[sessionID]
+		p.mu.Unlock()
+	}
 
 	if !sessionKnown {
 		p.renderLogoutComplete(w, r, clientID, postLogoutRedirectURI, state)
@@ -1801,7 +1806,6 @@ func (p *identityProvider) resumeSession(sessionID string) (session, bool) {
 	p.mu.Lock()
 	currentSession, ok := p.sessions[sessionID]
 	if ok && isSessionExpired(currentSession, now) {
-		delete(p.sessions, sessionID)
 		ok = false
 	}
 	if ok {
@@ -1904,7 +1908,7 @@ func (p *identityProvider) revokeGrant(code string) {
 func (p *identityProvider) removeExpiredState() {
 	now := time.Now()
 	for k, v := range p.sessions {
-		if isSessionExpired(v, now) {
+		if now.Sub(v.authenticatedAt) > sessionMaxTTL+refreshTokenMaxTTL+accessTokenTTL {
 			delete(p.sessions, k)
 		}
 	}
