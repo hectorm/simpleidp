@@ -537,8 +537,7 @@ func testBackChannelLogoutRememberingRPs(t *testing.T) {
 
 		request.ClientID = nativeClientID
 		request.RedirectURI = nativeClientRedirect
-		request.Prompt = "none"
-		code := expectAuthorizationCodeRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, provider.issuer)
+		code := authorize(t, provider, request).Code
 		body := fetchLogoutForm(t, provider, url.Values{"id_token_hint": {webToken.IDToken}})
 		_ = readBody(t, submitConsentForm(t, provider, body, "yes"))
 
@@ -1041,8 +1040,6 @@ func testBackChannelLogoutSecurity(t *testing.T) {
 			t.Fatal("expected a session identifier in the id token")
 		}
 		browser := newProviderBrowser(t, provider)
-		request.ClientID = nativeClientID
-		request.RedirectURI = nativeClientRedirect
 		request.Prompt = "none"
 		req, err := http.NewRequest(http.MethodGet, provider.endpoint("/authorize")+"?"+authorizeParams(request).Encode(), nil)
 		if err != nil {

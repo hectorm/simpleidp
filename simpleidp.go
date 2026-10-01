@@ -557,11 +557,16 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 			redirectWithError(w, r, p.issuer, *redirectURI, state, "login_required", "Authentication required")
 			return
 		}
+		if client.isPublic {
+			redirectWithError(w, r, p.issuer, *redirectURI, state, "interaction_required", "Public clients require end-user interaction")
+			return
+		}
 		p.authorizeUser(w, r, authorization, currentSession.username, currentSession.authenticatedAt, sessionID)
 		return
 	}
 
 	if sessionKnown && (r.Method == http.MethodGet || (username == "" && password == "")) {
+		authorization.consentRequired = authorization.consentRequired || client.isPublic
 		p.authorizeUser(w, r, authorization, currentSession.username, currentSession.authenticatedAt, sessionID)
 		return
 	}

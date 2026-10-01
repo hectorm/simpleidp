@@ -1241,7 +1241,7 @@ func testRefreshTokenRecommendations(t *testing.T) {
 		provider.expireRefreshTokenIdle(t, token.RefreshToken)
 
 		request.Prompt = "none"
-		expectAuthorizationCodeRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, provider.issuer)
+		expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "interaction_required")
 		for _, refreshToken := range []string{token.RefreshToken, refreshed.RefreshToken} {
 			errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
 				ClientID:     request.ClientID,

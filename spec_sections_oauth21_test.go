@@ -546,6 +546,48 @@ func testOAuth21SummaryOfRecommendations(t *testing.T) {
 	testOAuth21DontPassBearerTokensInPageURLs(t)
 }
 
+func testOAuth21ImpersonationOfNativeApps(t *testing.T) {
+	provider := startProvider(t, defaultProviderConfig())
+	_ = authorizeAndLogin(t, provider, newDefaultConfidentialAuthorizationRequest("oauth21-native-impersonation-session"))
+	request := authorizationRequest{
+		ClientID:    nativeClientID,
+		RedirectURI: "http://127.0.0.1:49207/callback",
+		Scope:       "openid profile",
+		State:       "oauth21-native-impersonation",
+		Verifier:    pkceVerifier("oauth21-native-impersonation"),
+	}
+
+	t.Run("requires end-user interaction before reusing a session for public clients", func(t *testing.T) {
+		resp := provider.getAuthorize(t, authorizeParams(request))
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if !strings.Contains(string(body), `data-testid="page-consent"`) {
+			t.Fatalf("expected consent form, got body=%s", body)
+		}
+		code := expectAuthorizationCodeRedirect(t, submitConsentForm(t, provider, body, "yes"), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
+		_ = exchangeAuthorizationCode(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			Code:         code,
+			CodeVerifier: request.Verifier,
+		})
+	})
+
+	t.Run("returns interaction_required for prompt none from public clients", func(t *testing.T) {
+		silentRequest := request
+		silentRequest.Prompt = "none"
+		expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, authorizeParams(silentRequest)), http.StatusFound, silentRequest.RedirectURI, silentRequest.State, provider.issuer, "interaction_required")
+	})
+
+	t.Run("does not add a consent step after interactive authentication", func(t *testing.T) {
+		authorization := authorizeAndLogin(t, provider, request)
+		if authorization.Code == "" {
+			t.Fatalf("expected authorization code, got %#v", authorization)
+		}
+	})
+}
+
 func testOAuth21AuthorizationCodeInjectionCountermeasures(t *testing.T) {
 	testAuthenticationRequestValidation(t)
 }
