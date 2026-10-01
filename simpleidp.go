@@ -2134,7 +2134,13 @@ func (p *identityProvider) sendBackchannelLogout(client client, user user, sessi
 		return
 	}
 
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).PostForm(client.backchannelLogoutURI.String(), url.Values{
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := httpClient.PostForm(client.backchannelLogoutURI.String(), url.Values{
 		"logout_token": {logoutToken},
 	})
 	if err != nil {

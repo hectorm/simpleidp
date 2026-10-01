@@ -1024,6 +1024,46 @@ func testBackChannelLogoutResponse(t *testing.T) {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", userInfoResp.Status, http.StatusUnauthorized, body)
 		}
 	})
+
+	t.Run("completes logout without following redirects from the back-channel endpoint", func(t *testing.T) {
+		for _, status := range []int{http.StatusSeeOther, http.StatusTemporaryRedirect} {
+			t.Run(http.StatusText(status), func(t *testing.T) {
+				listener, err := listenLocal(t)
+				if err != nil {
+					t.Fatalf("failed to open listener: %v", err)
+				}
+				addr := listener.Addr().String()
+				followed := make(chan struct{}, 1)
+				mux := http.NewServeMux()
+				mux.HandleFunc("POST /backchannel-logout", func(w http.ResponseWriter, r *http.Request) {
+					http.Redirect(w, r, "/redirected", status)
+				})
+				mux.HandleFunc("/redirected", func(w http.ResponseWriter, r *http.Request) {
+					select {
+					case followed <- struct{}{}:
+					default:
+					}
+					w.WriteHeader(http.StatusOK)
+				})
+				srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+				go func() { _ = srv.Serve(listener) }()
+				t.Cleanup(func() { _ = srv.Close() })
+
+				receiverURL := "http://" + addr + "/backchannel-logout"
+				provider := startProvider(t, backchannelProviderConfig(receiverURL, false))
+				token := performLogoutWithBackchannel(t, provider)
+				if len(followed) != 0 {
+					t.Fatalf("back-channel logout followed an HTTP %d redirect", status)
+				}
+
+				userInfoResp := provider.getUserInfoResponse(t, token.AccessToken)
+				body := readBody(t, userInfoResp)
+				if userInfoResp.StatusCode != http.StatusUnauthorized {
+					t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", userInfoResp.Status, http.StatusUnauthorized, body)
+				}
+			})
+		}
+	})
 }
 
 func testBackChannelLogoutSecurity(t *testing.T) {
