@@ -180,6 +180,28 @@ func testRPInitiatedLogout(t *testing.T) {
 		}
 	})
 
+	t.Run("keeps POSTed logout parameters out of the confirmation form URL", func(t *testing.T) {
+		fixture := prepareRPInitiatedLogout(t)
+		params := url.Values{
+			"id_token_hint":            {fixture.token.IDToken},
+			"post_logout_redirect_uri": {webClientPostLogoutRedirect},
+			"state":                    {"logout-state"},
+		}
+		resp := fixture.provider.postFormURL(t, fixture.provider.endpoint("/end-session"), params, "", false)
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("logout POST status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if action := extractFormAction(t, body); strings.Contains(action, "?") {
+			t.Fatalf("logout form action must not carry request parameters, got %q", action)
+		}
+		hidden := extractHiddenInputs(t, body)
+		hidden.Del("csrf_token")
+		if got := hidden.Encode(); got != params.Encode() {
+			t.Fatalf("hidden parameters mismatch: got %q, want %q", got, params.Encode())
+		}
+	})
+
 	t.Run("supports confirmed logout without a post-logout redirect uri", func(t *testing.T) {
 		provider := startProvider(t, defaultProviderConfig())
 		request := newDefaultConfidentialAuthorizationRequest("logout-without-redirect")

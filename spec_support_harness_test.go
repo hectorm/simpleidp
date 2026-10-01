@@ -978,6 +978,19 @@ func extractHiddenInputValue(t *testing.T, body []byte, name string) string {
 	return ""
 }
 
+func extractHiddenInputs(t *testing.T, body []byte) url.Values {
+	t.Helper()
+
+	inputs := url.Values{}
+	for _, match := range regexp.MustCompile(`<input type="hidden" name="([^"]*)" value="([^"]*)">`).FindAllSubmatch(body, -1) {
+		inputs.Add(html.UnescapeString(string(match[1])), html.UnescapeString(string(match[2])))
+	}
+	if len(inputs) == 0 {
+		t.Fatalf("failed to extract hidden inputs from body:\n%s", body)
+	}
+	return inputs
+}
+
 func resolveProviderURL(t *testing.T, issuer, ref string) string {
 	t.Helper()
 

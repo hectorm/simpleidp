@@ -63,6 +63,19 @@ func testAuthenticationRequest(t *testing.T) {
 			t.Fatalf("expected POST form, got body=%s", body)
 		}
 	})
+
+	t.Run("keeps POSTed authorization parameters out of the login form URL", func(t *testing.T) {
+		request := newDefaultConfidentialAuthorizationRequest("auth-request-post-hidden")
+		body := authorizeByPostExpectLoginPage(t, provider, request)
+		if action := extractFormAction(t, body); strings.Contains(action, "?") {
+			t.Fatalf("login form action must not carry request parameters, got %q", action)
+		}
+		hidden := extractHiddenInputs(t, body)
+		hidden.Del("csrf_token")
+		if got := hidden.Encode(); got != authorizeParams(request).Encode() {
+			t.Fatalf("hidden parameters mismatch: got %q, want %q", got, authorizeParams(request).Encode())
+		}
+	})
 }
 
 func testAuthenticationRequestValidation(t *testing.T) {
@@ -538,9 +551,10 @@ func testAuthorizationServerObtainsEndUserConsentAuthorization(t *testing.T) {
 
 	t.Run("rejects consent submissions without csrf protection", func(t *testing.T) {
 		body := authorizeAndLoginExpectPage(t, provider, request)
-		resp := provider.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, body)), url.Values{
-			"confirm": {"yes"},
-		}, "", false)
+		form := extractHiddenInputs(t, body)
+		form.Del("csrf_token")
+		form.Set("confirm", "yes")
+		resp := provider.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, body)), form, "", false)
 		raw := readBody(t, resp)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("consent status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, raw)
@@ -574,17 +588,11 @@ func testAuthorizationServerObtainsEndUserConsentAuthorization(t *testing.T) {
 					password = "bob-password"
 				}
 				otherConsentBody := readBody(t, submitLoginForm(t, browser, loginBody, username, password))
-				action, err := url.Parse(resolveProviderURL(t, provider.issuer, extractFormAction(t, consentBody)))
-				if err != nil {
-					t.Fatalf("failed to parse consent action: %v", err)
-				}
-				params := action.Query()
-				params.Set("state", "other-browser-state")
-				action.RawQuery = params.Encode()
-				resp := browser.postFormURL(t, action.String(), url.Values{
-					"confirm":    {"yes"},
-					"csrf_token": {extractHiddenInputValue(t, otherConsentBody, "csrf_token")},
-				}, "", false)
+				form := extractHiddenInputs(t, consentBody)
+				form.Set("state", "other-browser-state")
+				form.Set("confirm", "yes")
+				form.Set("csrf_token", extractHiddenInputValue(t, otherConsentBody, "csrf_token"))
+				resp := browser.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, consentBody)), form, "", false)
 				expectAuthorizationErrorRedirect(t, resp, http.StatusSeeOther, request.RedirectURI, "other-browser-state", provider.issuer, "invalid_request")
 			})
 		}

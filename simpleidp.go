@@ -309,7 +309,7 @@ func (p *identityProvider) handleLogin(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, p.base+"/", http.StatusFound)
 			return
 		}
-		p.renderLoginForm(w, r, p.base+"/login", "", "")
+		p.renderLoginForm(w, r, p.base+"/login", nil, "", "")
 		return
 	}
 
@@ -331,7 +331,7 @@ func (p *identityProvider) handleLogin(w http.ResponseWriter, r *http.Request) {
 	password := r.PostForm.Get("password")
 	authenticatedUser, userKnown := p.authenticateEndUser(username, password)
 	if !userKnown {
-		p.renderLoginForm(w, r, p.base+"/login", username, "Invalid username or password")
+		p.renderLoginForm(w, r, p.base+"/login", nil, username, "Invalid username or password")
 		return
 	}
 	p.issueSession(w, authenticatedUser.username, time.Now(), p.readSession(r))
@@ -418,7 +418,6 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 	}
 
 	clientID := params.Get("client_id")
-	code := params.Get("code")
 	scope := params.Get("scope")
 	codeChallenge := params.Get("code_challenge")
 	prompt := params.Get("prompt")
@@ -426,9 +425,10 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 	nonce := params.Get("nonce")
 	state := params.Get("state")
 
-	confirm, username, password := "", "", ""
+	code, confirm, username, password := "", "", "", ""
 	csrfToken := ""
 	if r.Method == http.MethodPost {
+		code = r.PostForm.Get("code")
 		confirm = r.PostForm.Get("confirm")
 		username = r.PostForm.Get("username")
 		password = r.PostForm.Get("password")
@@ -572,14 +572,13 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	loginAction := p.base + "/authorize?" + filterFormParams(authorization.params, "username", "password", "code", "confirm").Encode()
 	if r.Method == http.MethodGet || (username == "" && password == "") {
-		p.renderLoginForm(w, r, loginAction, "", "")
+		p.renderLoginForm(w, r, p.base+"/authorize", authorization.params, "", "")
 		return
 	}
 	authenticatedUser, userKnown := p.authenticateEndUser(username, password)
 	if !userKnown {
-		p.renderLoginForm(w, r, loginAction, username, "Invalid username or password")
+		p.renderLoginForm(w, r, p.base+"/authorize", authorization.params, username, "Invalid username or password")
 		return
 	}
 	if hintedUser.sub != "" && authenticatedUser.sub != hintedUser.sub {
@@ -1265,20 +1264,19 @@ func (p *identityProvider) renderProfilePage(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Request, action, username, errorMsg string) {
+func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Request, action string, params url.Values, username, errorMsg string) {
 	preAuthID := p.readPreAuthSession(r)
 	if preAuthID == "" {
 		preAuthID = p.issuePreAuthSession(w)
 	}
-	csrfToken := p.issueCSRFToken("preauth:" + preAuthID)
+	loginParams := filterFormParams(params, "username", "password", "code", "confirm", "csrf_token")
+	loginParams.Set("csrf_token", p.issueCSRFToken("preauth:"+preAuthID))
 	p.renderFormPage(w, r, formPage{
 		Title:  p.title,
 		Action: action,
 		Error:  errorMsg,
 		TestID: "page-login",
-		Params: url.Values{
-			"csrf_token": {csrfToken},
-		},
+		Params: loginParams,
 		Fields: []formPageField{
 			{Type: "text", Name: "username", Label: "Username", Value: username, Autocomplete: "username", Autofocus: true},
 			{Type: "password", Name: "password", Label: "Password", Autocomplete: "current-password"},
@@ -1290,17 +1288,15 @@ func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Reques
 }
 
 func (p *identityProvider) renderConsentForm(w http.ResponseWriter, r *http.Request, params url.Values, code, clientID, sessionID string) {
-	csrfToken := p.issueCSRFToken("session:" + sessionID)
-	consentParams := filterFormParams(params, "username", "password", "confirm")
+	consentParams := filterFormParams(params, "username", "password", "code", "confirm", "csrf_token")
 	consentParams.Set("code", code)
+	consentParams.Set("csrf_token", p.issueCSRFToken("session:"+sessionID))
 	p.renderFormPage(w, r, formPage{
 		Title:   p.title,
-		Action:  p.base + "/authorize?" + consentParams.Encode(),
+		Action:  p.base + "/authorize",
 		Message: fmt.Sprintf("Allow %s to access these scopes: %s?", clientID, params.Get("scope")),
 		TestID:  "page-consent",
-		Params: url.Values{
-			"csrf_token": {csrfToken},
-		},
+		Params:  consentParams,
 		Buttons: []formPageButton{
 			{Name: "confirm", Value: "yes", Label: "Allow"},
 			{Name: "confirm", Value: "no", Label: "Deny"},
@@ -1309,15 +1305,14 @@ func (p *identityProvider) renderConsentForm(w http.ResponseWriter, r *http.Requ
 }
 
 func (p *identityProvider) renderLogoutForm(w http.ResponseWriter, r *http.Request, params url.Values, sessionID string) {
-	csrfToken := p.issueCSRFToken("session:" + sessionID)
+	logoutParams := filterFormParams(params, "confirm", "csrf_token")
+	logoutParams.Set("csrf_token", p.issueCSRFToken("session:"+sessionID))
 	p.renderFormPage(w, r, formPage{
 		Title:   p.title,
-		Action:  p.base + "/end-session?" + filterFormParams(params, "confirm", "csrf_token").Encode(),
+		Action:  p.base + "/end-session",
 		Message: "Log out of this identity provider?",
 		TestID:  "page-logout",
-		Params: url.Values{
-			"csrf_token": {csrfToken},
-		},
+		Params:  logoutParams,
 		Buttons: []formPageButton{
 			{Name: "confirm", Value: "yes", Label: "Log out"},
 			{Name: "confirm", Value: "no", Label: "Cancel"},

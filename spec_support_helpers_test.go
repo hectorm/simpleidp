@@ -117,20 +117,18 @@ func authorizeByPostExpectLoginPage(t *testing.T, provider *providerProcess, req
 func submitLoginForm(t *testing.T, provider *providerProcess, formBody []byte, username, password string) *http.Response {
 	t.Helper()
 
-	return provider.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, formBody)), url.Values{
-		"username":   {username},
-		"password":   {password},
-		"csrf_token": {extractHiddenInputValue(t, formBody, "csrf_token")},
-	}, "", false)
+	form := extractHiddenInputs(t, formBody)
+	form.Set("username", username)
+	form.Set("password", password)
+	return provider.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, formBody)), form, "", false)
 }
 
 func submitConsentForm(t *testing.T, provider *providerProcess, formBody []byte, confirm string) *http.Response {
 	t.Helper()
 
-	return provider.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, formBody)), url.Values{
-		"confirm":    {confirm},
-		"csrf_token": {extractHiddenInputValue(t, formBody, "csrf_token")},
-	}, "", false)
+	form := extractHiddenInputs(t, formBody)
+	form.Set("confirm", confirm)
+	return provider.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, formBody)), form, "", false)
 }
 
 func newDefaultConfidentialAuthorizationRequest(verifier string) authorizationRequest {
