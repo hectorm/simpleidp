@@ -482,6 +482,8 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		if codeKnown {
 			switch confirm {
 			case "yes":
+				delete(p.pendingCodes, code)
+				code = rand.Text()
 				pendingCode.consentRequired = false
 				pendingCode.createdAt = now
 				p.pendingCodes[code] = pendingCode

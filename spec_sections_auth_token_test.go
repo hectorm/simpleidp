@@ -549,6 +549,33 @@ func testAuthorizationServerObtainsEndUserConsentAuthorization(t *testing.T) {
 		expectAuthorizationErrorRedirect(t, submitConsentForm(t, provider, body, "no"), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer, "access_denied")
 	})
 
+	t.Run("keeps the issued authorization code out of the consent page", func(t *testing.T) {
+		body := authorizeAndLoginExpectPage(t, provider, request)
+		if action := extractFormAction(t, body); strings.Contains(action, "?") {
+			t.Fatalf("consent form action must not carry request parameters, got %q", action)
+		}
+		pending := extractHiddenInputValue(t, body, "code")
+		code := expectAuthorizationCodeRedirect(t, submitConsentForm(t, provider, body, "yes"), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
+		if code == pending {
+			t.Fatal("expected a fresh authorization code after consent")
+		}
+		errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         pending,
+			CodeVerifier: request.Verifier,
+		}), http.StatusBadRequest)
+		if errResp.Error != "invalid_grant" {
+			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_grant")
+		}
+		_ = exchangeAuthorizationCode(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         code,
+			CodeVerifier: request.Verifier,
+		})
+	})
+
 	t.Run("rejects consent submissions without csrf protection", func(t *testing.T) {
 		body := authorizeAndLoginExpectPage(t, provider, request)
 		form := extractHiddenInputs(t, body)
