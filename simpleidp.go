@@ -70,6 +70,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 func New(environ []string, lookupEnv func(string) string, readFile func(string) ([]byte, error)) (string, *http.Server, error) {
@@ -2054,8 +2055,14 @@ func (p *identityProvider) mintIDToken(user user, client client, code pendingCod
 		}
 	}
 
-	headerJSON, _ := json.Marshal(header)
-	payloadJSON, _ := json.Marshal(payload)
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
 
 	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
 	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
@@ -2097,8 +2104,14 @@ func (p *identityProvider) mintLogoutToken(user user, client client, sessionID s
 		payload["sid"] = sessionID
 	}
 
-	headerJSON, _ := json.Marshal(header)
-	payloadJSON, _ := json.Marshal(payload)
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
 
 	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
 	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
@@ -2272,6 +2285,9 @@ func validateAuthorizeParams(params url.Values) (errorCode, errorDesc string) {
 	}
 	if params.Get("code_challenge_method") != "S256" {
 		return "invalid_request", "Only S256 code challenge method is supported"
+	}
+	if !utf8.ValidString(params.Get("nonce")) {
+		return "invalid_request", "Invalid nonce"
 	}
 	return "", ""
 }
