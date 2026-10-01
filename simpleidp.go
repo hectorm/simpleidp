@@ -3,12 +3,13 @@
 //
 // Configuration is entirely through environment variables:
 //
-// SIMPLE_IDP_LISTEN   - listen address (default ":8227")
-// SIMPLE_IDP_ISSUER   - issuer URL as seen by clients (required)
-// SIMPLE_IDP_TITLE    - login page title (default: "Simple IdP")
-// SIMPLE_IDP_KEY_ID   - JWKS key ID (default: "simple-idp")
-// SIMPLE_IDP_KEY_FILE - PEM file for PKCS8 RSA private key; generated in memory if empty
-// SIMPLE_IDP_KEY_B64  - base64-encoded PKCS8 RSA private key (alternative to KEY_FILE)
+// SIMPLE_IDP_LISTEN       - listen address (default ":8227")
+// SIMPLE_IDP_ISSUER       - issuer URL as seen by clients (required)
+// SIMPLE_IDP_TITLE        - login page title (default: "Simple IdP")
+// SIMPLE_IDP_ACCENT_COLOR - accent color for the pages (default: "oklch(49% 0.19 264)")
+// SIMPLE_IDP_KEY_ID       - JWKS key ID (default: "simple-idp")
+// SIMPLE_IDP_KEY_FILE     - PEM file for PKCS8 RSA private key; generated in memory if empty
+// SIMPLE_IDP_KEY_B64      - base64-encoded PKCS8 RSA private key (alternative to KEY_FILE)
 //
 // Clients are configured with a label prefix (the label is arbitrary, used only for grouping):
 //
@@ -181,6 +182,7 @@ type identityProvider struct {
 	issuer        string
 	base          string
 	title         string
+	accentColor   template.CSS
 	keyID         string
 	privKey       *rsa.PrivateKey
 	csrfKey       []byte
@@ -218,6 +220,7 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 	}
 
 	title := envOr(lookupEnv, "SIMPLE_IDP_TITLE", "Simple IdP")
+	accentColor := template.CSS(envOr(lookupEnv, "SIMPLE_IDP_ACCENT_COLOR", "oklch(49% 0.19 264)"))
 	keyID := envOr(lookupEnv, "SIMPLE_IDP_KEY_ID", "simple-idp")
 	privKey, err := loadOrGenerateKey(lookupEnv, readFile)
 	if err != nil {
@@ -233,6 +236,7 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 		issuer:        issuer,
 		base:          issuerURL.Path,
 		title:         title,
+		accentColor:   accentColor,
 		keyID:         keyID,
 		privKey:       privKey,
 		csrfKey:       csrfKey,
@@ -941,6 +945,7 @@ type formPageLink struct {
 
 type formPage struct {
 	Title       string
+	AccentColor template.CSS
 	Nonce       string
 	Action      string
 	Message     string
@@ -965,15 +970,24 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 	<style nonce="{{.Nonce}}">
 		:root {
 			color-scheme: light dark;
+			--color-accent-base: {{.AccentColor}};
+			--color-accent-light: oklch(from var(--color-accent-base) l c h);
+			--color-accent-dark: oklch(from var(--color-accent-base) calc(l + .05) c h);
+			--color-accent: light-dark(var(--color-accent-light), var(--color-accent-dark));
+			--color-accent-contrast: light-dark(
+				oklch(from var(--color-accent-light) clamp(0, (.6 - l) * 1000, 1) 0 0),
+				oklch(from var(--color-accent-dark) clamp(0, (.6 - l) * 1000, 1) 0 0)
+			);
 			--color-bg: light-dark(oklch(96% 0 0), oklch(18% 0 0));
 			--color-surface: light-dark(oklch(100% 0 0), oklch(23% 0 0));
 			--color-shadow: light-dark(oklch(0% 0 0 / .08), oklch(0% 0 0 / .4));
 			--color-text: light-dark(oklch(22% 0 0), oklch(92% 0 0));
-			--color-text-muted: light-dark(oklch(37% 0.03 260), oklch(71% 0.01 286));
+			--color-text-muted: light-dark(
+				oklch(from var(--color-accent-base) 37% calc(c * .16) h),
+				oklch(from var(--color-accent-base) 71% calc(c * .05) h)
+			);
 			--color-border: color-mix(in oklch, var(--color-text) 20%, transparent);
-			--color-primary: light-dark(oklch(49% 0.19 264), oklch(54% 0.18 262));
-			--color-primary-contrast: oklch(100% 0 0);
-			--color-focus-ring: color-mix(in oklch, var(--color-primary) 25%, transparent);
+			--color-focus-ring: color-mix(in oklch, var(--color-accent) 25%, transparent);
 			--color-error: light-dark(oklch(51% 0.19 28), oklch(71% 0.17 22));
 			--color-error-bg: color-mix(in oklch, var(--color-error) 10%, var(--color-surface));
 			--color-error-border: color-mix(in oklch, var(--color-error) 25%, var(--color-surface));
@@ -1061,7 +1075,7 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 				background: var(--color-surface);
 				transition: border-color .15s;
 				&:focus-visible {
-					border-color: var(--color-primary);
+					border-color: var(--color-accent);
 					outline: none;
 					box-shadow: 0 0 0 3px var(--color-focus-ring);
 				}
@@ -1090,13 +1104,13 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 			}
 		}
 		button {
-			color: var(--color-primary-contrast);
-			background: var(--color-primary);
+			color: var(--color-accent-contrast);
+			background: var(--color-accent);
 			&:hover {
-				background: color-mix(in oklch, var(--color-primary) 85%, light-dark(black, white));
+				background: color-mix(in oklch, var(--color-accent) 85%, light-dark(black, white));
 			}
 			&:active {
-				background: color-mix(in oklch, var(--color-primary) 70%, light-dark(black, white));
+				background: color-mix(in oklch, var(--color-accent) 70%, light-dark(black, white));
 			}
 		}
 		button[value=no], a {
@@ -1185,6 +1199,7 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 </html>`))
 
 func (p *identityProvider) renderFormPage(w http.ResponseWriter, r *http.Request, page formPage) {
+	page.AccentColor = p.accentColor
 	page.Nonce = rand.Text()
 	switch {
 	case page.Message != "" && page.Error != "":
