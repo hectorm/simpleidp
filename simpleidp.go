@@ -7,6 +7,7 @@
 // SIMPLE_IDP_ISSUER       - issuer URL as seen by clients (required)
 // SIMPLE_IDP_TITLE        - login page title (default: "Simple IdP")
 // SIMPLE_IDP_ACCENT_COLOR - accent color for the pages (default: "oklch(49% 0.19 264)")
+// SIMPLE_IDP_FAVICON      - favicon URL or data URI (default: blank icon)
 // SIMPLE_IDP_KEY_ID       - JWKS key ID (default: "simple-idp")
 // SIMPLE_IDP_KEY_FILE     - PEM file for PKCS8 RSA private key; generated in memory if empty
 // SIMPLE_IDP_KEY_B64      - base64-encoded PKCS8 RSA private key (alternative to KEY_FILE)
@@ -183,6 +184,7 @@ type identityProvider struct {
 	base          string
 	title         string
 	accentColor   template.CSS
+	favicon       template.URL
 	keyID         string
 	privKey       *rsa.PrivateKey
 	csrfKey       []byte
@@ -221,6 +223,7 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 
 	title := envOr(lookupEnv, "SIMPLE_IDP_TITLE", "Simple IdP")
 	accentColor := template.CSS(envOr(lookupEnv, "SIMPLE_IDP_ACCENT_COLOR", "oklch(49% 0.19 264)"))
+	favicon := template.URL(envOr(lookupEnv, "SIMPLE_IDP_FAVICON", ""))
 	keyID := envOr(lookupEnv, "SIMPLE_IDP_KEY_ID", "simple-idp")
 	privKey, err := loadOrGenerateKey(lookupEnv, readFile)
 	if err != nil {
@@ -237,6 +240,7 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 		base:          issuerURL.Path,
 		title:         title,
 		accentColor:   accentColor,
+		favicon:       favicon,
 		keyID:         keyID,
 		privKey:       privKey,
 		csrfKey:       csrfKey,
@@ -946,6 +950,7 @@ type formPageLink struct {
 type formPage struct {
 	Title       string
 	AccentColor template.CSS
+	Favicon     template.URL
 	Nonce       string
 	Action      string
 	Message     string
@@ -967,6 +972,9 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 	<meta name="color-scheme" content="light dark">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>{{.Title}}</title>
+	{{- if .Favicon}}
+	<link rel="icon" href="{{.Favicon}}">
+	{{- end}}
 	<style nonce="{{.Nonce}}">
 		:root {
 			color-scheme: light dark;
@@ -1200,6 +1208,7 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 
 func (p *identityProvider) renderFormPage(w http.ResponseWriter, r *http.Request, page formPage) {
 	page.AccentColor = p.accentColor
+	page.Favicon = p.favicon
 	page.Nonce = rand.Text()
 	switch {
 	case page.Message != "" && page.Error != "":
@@ -1210,7 +1219,7 @@ func (p *identityProvider) renderFormPage(w http.ResponseWriter, r *http.Request
 		page.DescribedBy = "form-error"
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'nonce-"+page.Nonce+"'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'nonce-"+page.Nonce+"'; img-src 'self' data: https: http:; frame-ancestors 'none'; base-uri 'none'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Vary", "Accept-Encoding")
 	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
