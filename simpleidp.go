@@ -552,7 +552,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	if prompt == "none" {
+	if hasPromptValue(prompt, "none") {
 		if !sessionKnown {
 			redirectWithError(w, r, p.issuer, *redirectURI, state, "login_required", "Authentication required")
 			return

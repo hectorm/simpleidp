@@ -6,6 +6,7 @@ package simpleidp
 
 import (
 	"encoding/json/v2"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -428,6 +429,22 @@ func testAuthorizationServerAuthenticatesEndUser(t *testing.T) {
 		claims := verifyIDToken(t, provider, token.IDToken)
 		if claims.AuthTime != initialClaims.AuthTime {
 			t.Fatalf("expected reused session auth_time %d, got %d", initialClaims.AuthTime, claims.AuthTime)
+		}
+	})
+
+	t.Run("handles whitespace around prompt none without interaction", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		request := newDefaultConfidentialAuthorizationRequest("prompt-none-whitespace")
+		anonymous := newProviderBrowser(t, provider)
+		authorizeAndLogin(t, provider, request)
+		for _, prompt := range []string{"none", " none", "none ", " none ", "\tnone\n"} {
+			t.Run(fmt.Sprintf("%q", prompt), func(t *testing.T) {
+				request.Prompt = prompt
+				expectAuthorizationErrorRedirect(t, anonymous.getAuthorize(t, authorizeParams(request)), http.StatusFound,
+					request.RedirectURI, request.State, provider.issuer, "login_required")
+				expectAuthorizationCodeRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound,
+					request.RedirectURI, request.State, provider.issuer)
+			})
 		}
 	})
 
