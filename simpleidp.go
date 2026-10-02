@@ -229,8 +229,8 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 	}
 
 	title := envOr(lookupEnv, "SIMPLE_IDP_TITLE", "Simple IdP")
-	accentColor := template.CSS(envOr(lookupEnv, "SIMPLE_IDP_ACCENT_COLOR", "oklch(49% 0.19 264)"))
-	favicon := template.URL(envOr(lookupEnv, "SIMPLE_IDP_FAVICON", ""))
+	accentColor := template.CSS(envOr(lookupEnv, "SIMPLE_IDP_ACCENT_COLOR", "oklch(49% 0.19 264)")) // #nosec G203
+	favicon := template.URL(envOr(lookupEnv, "SIMPLE_IDP_FAVICON", ""))                             // #nosec G203
 	keyID := envOr(lookupEnv, "SIMPLE_IDP_KEY_ID", "simple-idp")
 	privKey, err := loadOrGenerateKey(lookupEnv, readFile)
 	if err != nil {
