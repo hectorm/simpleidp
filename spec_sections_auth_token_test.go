@@ -525,6 +525,31 @@ func testAuthorizationServerAuthenticatesEndUser(t *testing.T) {
 			t.Fatalf("expected invalid session error, got body=%s", body)
 		}
 	})
+
+	t.Run("renews the pre-auth cookie whenever it renders a login form", func(t *testing.T) {
+		browser := newProviderBrowser(t, provider)
+		var preAuthIDs []string
+		for range 2 {
+			resp := browser.getAuthorize(t, authorizeParams(request))
+			body := readBody(t, resp)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+			}
+			var renewed *http.Cookie
+			for _, cookie := range resp.Cookies() {
+				if cookie.Name == provider.idp.cookieName(preAuthSessionCookieBaseName) {
+					renewed = cookie
+				}
+			}
+			if renewed == nil || renewed.MaxAge != int(loginActionTTL.Seconds()) {
+				t.Fatalf("expected a renewed pre-auth cookie, got %v", resp.Cookies())
+			}
+			preAuthIDs = append(preAuthIDs, renewed.Value)
+		}
+		if preAuthIDs[0] != preAuthIDs[1] {
+			t.Fatalf("expected the pre-auth ID to be kept, got %q then %q", preAuthIDs[0], preAuthIDs[1])
+		}
+	})
 }
 
 func testAuthorizationServerObtainsEndUserConsentAuthorization(t *testing.T) {

@@ -1267,10 +1267,7 @@ func (p *identityProvider) renderProfilePage(w http.ResponseWriter, r *http.Requ
 }
 
 func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Request, action string, params url.Values, username, errorMsg string) {
-	preAuthID := p.readPreAuthSession(r)
-	if preAuthID == "" {
-		preAuthID = p.issuePreAuthSession(w)
-	}
+	preAuthID := p.issuePreAuthSession(w, p.readPreAuthSession(r))
 	loginParams := filterFormParams(params, "username", "password", "code", "confirm", "csrf_token")
 	loginParams.Set("csrf_token", p.issueCSRFToken("preauth:"+preAuthID))
 	p.renderFormPage(w, r, formPage{
@@ -1715,8 +1712,10 @@ func (p *identityProvider) readPreAuthSession(r *http.Request) string {
 	return p.readCookie(r, preAuthSessionCookieBaseName)
 }
 
-func (p *identityProvider) issuePreAuthSession(w http.ResponseWriter) string {
-	preAuthID := rand.Text()
+func (p *identityProvider) issuePreAuthSession(w http.ResponseWriter, preAuthID string) string {
+	if preAuthID == "" {
+		preAuthID = rand.Text()
+	}
 	cookie := p.newCookie(preAuthSessionCookieBaseName) // #nosec G124
 	cookie.Value = preAuthID
 	cookie.MaxAge = int(loginActionTTL.Seconds())
