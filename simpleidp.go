@@ -1289,16 +1289,19 @@ func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-func (p *identityProvider) renderConsentForm(w http.ResponseWriter, r *http.Request, params url.Values, code, clientID, sessionID string) {
-	consentParams := filterFormParams(params, "username", "password", "code", "confirm", "csrf_token")
+func (p *identityProvider) renderConsentForm(w http.ResponseWriter, r *http.Request, authorization authorizeRequest, code, sessionID string) {
+	consentParams := filterFormParams(authorization.params, "username", "password", "code", "confirm", "csrf_token")
 	consentParams.Set("code", code)
 	consentParams.Set("csrf_token", p.issueCSRFToken("session:"+sessionID))
 	p.renderFormPage(w, r, formPage{
 		Title:   p.title,
 		Action:  p.base + "/authorize",
-		Message: fmt.Sprintf("Allow %s to access these scopes: %s?", clientID, params.Get("scope")),
+		Message: fmt.Sprintf("Allow %s to access these scopes: %s?", authorization.client.id, authorization.scope),
 		TestID:  "page-consent",
 		Params:  consentParams,
+		Details: []formPageDetail{
+			{Label: "Redirect URI", Value: authorization.redirectURI.String()},
+		},
 		Buttons: []formPageButton{
 			{Name: "confirm", Value: "yes", Label: "Allow"},
 			{Name: "confirm", Value: "no", Label: "Deny"},
@@ -1462,7 +1465,7 @@ func (p *identityProvider) authorizeUser(w http.ResponseWriter, r *http.Request,
 	p.mu.Unlock()
 
 	if authorization.consentRequired {
-		p.renderConsentForm(w, r, authorization.params, issuedCode, authorization.client.id, sessionID)
+		p.renderConsentForm(w, r, authorization, issuedCode, sessionID)
 		return
 	}
 	redirectWithCode(w, r, p.issuer, authorization.redirectURI, issuedCode, authorization.state)
@@ -2300,7 +2303,9 @@ func filterScope(scope string) (string, bool) {
 	for candidateScope := range strings.FieldsSeq(scope) {
 		switch candidateScope {
 		case "openid", "profile", "email", "groups", "roles":
-			kept = append(kept, candidateScope)
+			if !slices.Contains(kept, candidateScope) {
+				kept = append(kept, candidateScope)
+			}
 		}
 	}
 	if !slices.Contains(kept, "openid") {

@@ -549,6 +549,29 @@ func testAuthorizationServerObtainsEndUserConsentAuthorization(t *testing.T) {
 		expectAuthorizationErrorRedirect(t, submitConsentForm(t, provider, body, "no"), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer, "access_denied")
 	})
 
+	t.Run("shows the end user the granted scopes and redirect URI", func(t *testing.T) {
+		spoofedRequest := request
+		spoofedRequest.Scope = "openid email -- note: this app will NOT read your email address"
+		body := authorizeAndLoginExpectPage(t, provider, spoofedRequest)
+		if want := `data-testid="message">Allow ` + webClientID + ` to access these scopes: openid email?</p>`; !strings.Contains(string(body), want) {
+			t.Fatalf("expected consent message %q, got body=%s", want, body)
+		}
+		if want := "<dd>" + spoofedRequest.RedirectURI + "</dd>"; !strings.Contains(string(body), want) {
+			t.Fatalf("expected consent redirect URI %q, got body=%s", want, body)
+		}
+
+		code := expectAuthorizationCodeRedirect(t, submitConsentForm(t, provider, body, "yes"), http.StatusSeeOther, spoofedRequest.RedirectURI, spoofedRequest.State, provider.issuer)
+		token := exchangeAuthorizationCode(t, provider, tokenRequest{
+			ClientID:     spoofedRequest.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         code,
+			CodeVerifier: spoofedRequest.Verifier,
+		})
+		if token.Scope != "openid email" {
+			t.Fatalf("scope mismatch: got %q, want %q", token.Scope, "openid email")
+		}
+	})
+
 	t.Run("keeps the issued authorization code out of the consent page", func(t *testing.T) {
 		body := authorizeAndLoginExpectPage(t, provider, request)
 		if action := extractFormAction(t, body); strings.Contains(action, "?") {
