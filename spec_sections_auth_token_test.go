@@ -76,6 +76,40 @@ func testAuthenticationRequest(t *testing.T) {
 			t.Fatalf("hidden parameters mismatch: got %q, want %q", got, authorizeParams(request).Encode())
 		}
 	})
+
+	t.Run("reuses the session for cross-site POST authorization requests", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		_ = authorizeAndLogin(t, provider, newDefaultConfidentialAuthorizationRequest("auth-request-cross-site-session"))
+		request := newDefaultConfidentialAuthorizationRequest("auth-request-cross-site")
+		request.Prompt = "none"
+		params := authorizeParams(request)
+		body := expectResubmitForm(t, provider.postCrossSite(t, provider.endpoint("/authorize"), params), params)
+
+		code := expectAuthorizationCodeRedirect(t, submitResubmitForm(t, provider, body), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
+		_ = exchangeAuthorizationCode(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         code,
+			CodeVerifier: request.Verifier,
+		})
+	})
+
+	t.Run("signs in from cross-site POST authorization requests without a session", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		request := newDefaultConfidentialAuthorizationRequest("auth-request-cross-site-login")
+		params := authorizeParams(request)
+		body := expectResubmitForm(t, provider.postCrossSite(t, provider.endpoint("/authorize"), params), params)
+
+		resp := submitResubmitForm(t, provider, body)
+		body = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if !strings.Contains(string(body), "Sign in") {
+			t.Fatalf("expected login form, got body=%s", body)
+		}
+		_ = expectAuthorizationCodeRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
+	})
 }
 
 func testAuthenticationRequestValidation(t *testing.T) {

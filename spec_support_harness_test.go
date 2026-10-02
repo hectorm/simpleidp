@@ -366,6 +366,18 @@ func (p *providerProcess) postFormURL(t *testing.T, target string, form url.Valu
 	return p.do(t, client, req)
 }
 
+func (p *providerProcess) postCrossSite(t *testing.T, target string, form url.Values) *http.Response {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("failed to create cross-site POST request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Close = true
+	return p.do(t, newHTTPClient(false, nil), req)
+}
+
 func (p *providerProcess) do(t *testing.T, client *http.Client, req *http.Request) *http.Response {
 	t.Helper()
 

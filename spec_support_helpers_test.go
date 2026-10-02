@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -103,7 +104,8 @@ func fetchDiscoveryResponse(t *testing.T, provider *providerProcess) (*http.Resp
 func authorizeByPostExpectLoginPage(t *testing.T, provider *providerProcess, request authorizationRequest) []byte {
 	t.Helper()
 
-	resp := provider.postAuthorize(t, url.Values{}, authorizeParams(request))
+	params := authorizeParams(request)
+	resp := submitResubmitForm(t, provider, expectResubmitForm(t, provider.postAuthorize(t, url.Values{}, params), params))
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("authorize POST status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
@@ -129,6 +131,39 @@ func submitConsentForm(t *testing.T, provider *providerProcess, formBody []byte,
 	form := extractHiddenInputs(t, formBody)
 	form.Set("confirm", confirm)
 	return provider.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, formBody)), form, "", false)
+}
+
+func expectResubmitForm(t *testing.T, resp *http.Response, params url.Values) []byte {
+	t.Helper()
+
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("resubmit status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+	}
+	if !strings.Contains(string(body), `data-testid="page-resubmit"`) {
+		t.Fatalf("expected resubmit form, got body=%s", body)
+	}
+	if action := extractFormAction(t, body); strings.Contains(action, "?") {
+		t.Fatalf("resubmit form action must not carry request parameters, got %q", action)
+	}
+	hidden := extractHiddenInputs(t, body)
+	if hidden.Get(resubmitParam) == "" {
+		t.Fatalf("resubmit form is missing the %s marker: %v", resubmitParam, hidden)
+	}
+	hidden.Del(resubmitParam)
+	if got := hidden.Encode(); got != params.Encode() {
+		t.Fatalf("resubmitted parameters mismatch: got %q, want %q", got, params.Encode())
+	}
+	nonce := regexp.MustCompile(`script-src 'nonce-([^']+)'`).FindStringSubmatch(resp.Header.Get("Content-Security-Policy"))
+	if nonce == nil || !strings.Contains(string(body), `<script nonce="`+nonce[1]+`">document.forms[0].submit()</script>`) {
+		t.Fatalf("expected a nonce-allowed auto-submit script, got CSP %q; body=%s", resp.Header.Get("Content-Security-Policy"), body)
+	}
+	return body
+}
+
+func submitResubmitForm(t *testing.T, provider *providerProcess, formBody []byte) *http.Response {
+	t.Helper()
+	return provider.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, formBody)), extractHiddenInputs(t, formBody), "", false)
 }
 
 func newDefaultConfidentialAuthorizationRequest(verifier string) authorizationRequest {

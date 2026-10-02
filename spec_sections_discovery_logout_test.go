@@ -202,6 +202,51 @@ func testRPInitiatedLogout(t *testing.T) {
 		}
 	})
 
+	t.Run("logs out the session for cross-site POST logout requests", func(t *testing.T) {
+		fixture := prepareRPInitiatedLogout(t)
+		params := url.Values{
+			"id_token_hint":            {fixture.token.IDToken},
+			"post_logout_redirect_uri": {webClientPostLogoutRedirect},
+			"state":                    {"logout-state"},
+		}
+		body := expectResubmitForm(t, fixture.provider.postCrossSite(t, fixture.provider.endpoint("/end-session"), params), params)
+
+		resp := submitResubmitForm(t, fixture.provider, body)
+		body = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("logout form status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if !strings.Contains(string(body), "Log out of this identity provider?") {
+			t.Fatalf("expected logout confirmation form, got body=%s", body)
+		}
+		hidden := extractHiddenInputs(t, body)
+		hidden.Del("csrf_token")
+		if got := hidden.Encode(); got != params.Encode() {
+			t.Fatalf("hidden parameters mismatch: got %q, want %q", got, params.Encode())
+		}
+
+		_ = expectRedirect(t, submitConsentForm(t, fixture.provider, body, "yes"), http.StatusSeeOther)
+		userInfoResp := fixture.provider.getUserInfoResponse(t, fixture.token.AccessToken)
+		body = readBody(t, userInfoResp)
+		if userInfoResp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", userInfoResp.Status, http.StatusUnauthorized, body)
+		}
+	})
+
+	t.Run("completes cross-site POST logout requests without a session", func(t *testing.T) {
+		fixture := prepareRPInitiatedLogout(t)
+		browser := newProviderBrowser(t, fixture.provider)
+		params := url.Values{
+			"id_token_hint":            {fixture.token.IDToken},
+			"post_logout_redirect_uri": {webClientPostLogoutRedirect},
+			"state":                    {"logout-state"},
+		}
+		body := expectResubmitForm(t, browser.postCrossSite(t, browser.endpoint("/end-session"), params), params)
+
+		redirect := expectRedirect(t, submitResubmitForm(t, browser, body), http.StatusSeeOther)
+		assertRedirectTarget(t, redirect, webClientPostLogoutRedirect)
+	})
+
 	t.Run("supports confirmed logout without a post-logout redirect uri", func(t *testing.T) {
 		provider := startProvider(t, defaultProviderConfig())
 		request := newDefaultConfidentialAuthorizationRequest("logout-without-redirect")

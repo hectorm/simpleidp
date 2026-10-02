@@ -94,6 +94,12 @@ const (
 	maxFormBodyBytes             = 1 << 20
 	sessionCookieBaseName        = "simple_idp_session"
 	preAuthSessionCookieBaseName = "simple_idp_preauth_session"
+	resubmitParam                = "resubmitted"
+)
+
+var (
+	authorizeFormFields  = []string{"username", "password", "code", "confirm", "csrf_token"}
+	endSessionFormFields = []string{"confirm", "csrf_token"}
 )
 
 type client struct {
@@ -411,6 +417,8 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 	if r.Method == http.MethodPost && len(params) == 0 {
 		params = r.PostForm
 	}
+	resubmitted := params.Has(resubmitParam)
+	params = filterFormParams(params, resubmitParam)
 
 	if len(params["client_id"]) > 1 || len(params["redirect_uri"]) > 1 {
 		http.Error(w, "Duplicate parameter", http.StatusBadRequest)
@@ -546,6 +554,10 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		codeChallenge:   codeChallenge,
 		nonce:           nonce,
 		consentRequired: consentRequired,
+	}
+	if r.Method == http.MethodPost && !resubmitted && sessionID == "" && username == "" && password == "" {
+		p.renderResubmitForm(w, r, p.base+"/authorize", params, authorizeFormFields...)
+		return
 	}
 	currentSession, sessionKnown := session{}, false
 	if !hasPromptValue(prompt, "login") && !hasPromptValue(prompt, "select_account") {
@@ -836,6 +848,8 @@ func (p *identityProvider) handleEndSession(w http.ResponseWriter, r *http.Reque
 	if r.Method == http.MethodPost && len(params) == 0 {
 		params = r.PostForm
 	}
+	resubmitted := params.Has(resubmitParam)
+	params = filterFormParams(params, resubmitParam)
 	if !hasUniqueParams(params) {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
@@ -879,6 +893,10 @@ func (p *identityProvider) handleEndSession(w http.ResponseWriter, r *http.Reque
 	}
 
 	sessionID := p.readSession(r)
+	if r.Method == http.MethodPost && !resubmitted && sessionID == "" && confirm == "" {
+		p.renderResubmitForm(w, r, p.base+"/end-session", params, endSessionFormFields...)
+		return
+	}
 	_, sessionKnown := p.resumeSession(sessionID)
 	if !sessionKnown {
 		p.mu.Lock()
@@ -974,6 +992,7 @@ type formPage struct {
 	Fields      []formPageField
 	Buttons     []formPageButton
 	Links       []formPageLink
+	AutoSubmit  bool
 }
 
 var formPageGzipPool = sync.Pool{New: func() any { return gzip.NewWriter(nil) }}
@@ -1215,6 +1234,9 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 		</ul>
 		{{- end}}
 	</main>
+	{{- if .AutoSubmit}}
+	<script nonce="{{.Nonce}}">document.forms[0].submit()</script>
+	{{- end}}
 </body>
 </html>`))
 
@@ -1230,8 +1252,12 @@ func (p *identityProvider) renderFormPage(w http.ResponseWriter, r *http.Request
 	case page.Error != "":
 		page.DescribedBy = "form-error"
 	}
+	scriptSrc := ""
+	if page.AutoSubmit {
+		scriptSrc = "; script-src 'nonce-" + page.Nonce + "'"
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'nonce-"+page.Nonce+"'; img-src 'self' data: https: http:; frame-ancestors 'none'; base-uri 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'nonce-"+page.Nonce+"'"+scriptSrc+"; img-src 'self' data: https: http:; frame-ancestors 'none'; base-uri 'none'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Vary", "Accept-Encoding")
 	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
@@ -1268,7 +1294,7 @@ func (p *identityProvider) renderProfilePage(w http.ResponseWriter, r *http.Requ
 
 func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Request, action string, params url.Values, username, errorMsg string) {
 	preAuthID := p.issuePreAuthSession(w, p.readPreAuthSession(r))
-	loginParams := filterFormParams(params, "username", "password", "code", "confirm", "csrf_token")
+	loginParams := filterFormParams(params, authorizeFormFields...)
 	loginParams.Set("csrf_token", p.issueCSRFToken("preauth:"+preAuthID))
 	p.renderFormPage(w, r, formPage{
 		Title:  p.title,
@@ -1286,8 +1312,21 @@ func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (p *identityProvider) renderResubmitForm(w http.ResponseWriter, r *http.Request, action string, params url.Values, skipped ...string) {
+	resubmitParams := filterFormParams(params, skipped...)
+	resubmitParams.Set(resubmitParam, "1")
+	p.renderFormPage(w, r, formPage{
+		Title:      p.title,
+		Action:     action,
+		TestID:     "page-resubmit",
+		Params:     resubmitParams,
+		Buttons:    []formPageButton{{Label: "Continue"}},
+		AutoSubmit: true,
+	})
+}
+
 func (p *identityProvider) renderConsentForm(w http.ResponseWriter, r *http.Request, authorization authorizeRequest, code, sessionID string) {
-	consentParams := filterFormParams(authorization.params, "username", "password", "code", "confirm", "csrf_token")
+	consentParams := filterFormParams(authorization.params, authorizeFormFields...)
 	consentParams.Set("code", code)
 	consentParams.Set("csrf_token", p.issueCSRFToken("session:"+sessionID))
 	p.renderFormPage(w, r, formPage{
@@ -1307,7 +1346,7 @@ func (p *identityProvider) renderConsentForm(w http.ResponseWriter, r *http.Requ
 }
 
 func (p *identityProvider) renderLogoutForm(w http.ResponseWriter, r *http.Request, params url.Values, sessionID string) {
-	logoutParams := filterFormParams(params, "confirm", "csrf_token")
+	logoutParams := filterFormParams(params, endSessionFormFields...)
 	logoutParams.Set("csrf_token", p.issueCSRFToken("session:"+sessionID))
 	p.renderFormPage(w, r, formPage{
 		Title:   p.title,
