@@ -1152,6 +1152,29 @@ func testRefreshRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("omits the id token when a narrower refresh scope drops openid", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		request := newDefaultConfidentialAuthorizationRequest("refresh-request-without-openid")
+		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+
+		refreshed := exchangeRefreshToken(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			RefreshToken: token.RefreshToken,
+			Scope:        "email",
+		})
+		if refreshed.Scope != "email" {
+			t.Fatalf("scope mismatch: got %q, want %q", refreshed.Scope, "email")
+		}
+		if refreshed.IDToken != "" {
+			t.Fatalf("did not expect an id token without the openid scope, got %q", refreshed.IDToken)
+		}
+	})
+
 	t.Run("rejects refresh requests that exceed the original scope", func(t *testing.T) {
 		provider := startProvider(t, defaultProviderConfig())
 		request := newDefaultConfidentialAuthorizationRequest("refresh-request-invalid-scope")

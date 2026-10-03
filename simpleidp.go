@@ -1661,14 +1661,18 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 	newAccessTokenValue := rand.Text()
 	newRefreshTokenValue := rand.Text()
 
-	idToken, err := p.mintIDToken(user, client, pendingCode{
-		scope:           effectiveAccessScope,
-		sessionID:       storedRefreshToken.sessionID,
-		authenticatedAt: storedRefreshToken.authenticatedAt,
-	}, newAccessTokenValue)
-	if err != nil {
-		http.Error(w, "Failed to mint ID token", http.StatusInternalServerError)
-		return
+	idToken := ""
+	if slices.Contains(strings.Fields(effectiveAccessScope), "openid") {
+		var err error
+		idToken, err = p.mintIDToken(user, client, pendingCode{
+			scope:           effectiveAccessScope,
+			sessionID:       storedRefreshToken.sessionID,
+			authenticatedAt: storedRefreshToken.authenticatedAt,
+		}, newAccessTokenValue)
+		if err != nil {
+			http.Error(w, "Failed to mint ID token", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	issuedAt := time.Now()
@@ -1708,7 +1712,9 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 		"expires_in":    int(accessTokenTTL.Seconds()),
 		"scope":         effectiveAccessScope,
 		"refresh_token": newRefreshTokenValue,
-		"id_token":      idToken,
+	}
+	if idToken != "" {
+		response["id_token"] = idToken
 	}
 	writeJSON(w, http.StatusOK, response)
 }
