@@ -11,8 +11,10 @@ package simpleidp
 import (
 	"context"
 	"crypto"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json/v2"
 	"errors"
@@ -44,8 +46,25 @@ type providerProcess struct {
 	http         *http.Client
 }
 
+var testSigningKeyB64 = sync.OnceValues(func() (string, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 3072)
+	if err != nil {
+		return "", err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(der), nil
+})
+
 func startProvider(t *testing.T, config providerConfig) *providerProcess {
 	t.Helper()
+
+	signingKey, err := testSigningKeyB64()
+	if err != nil {
+		t.Fatalf("failed to generate signing key: %v", err)
+	}
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -65,6 +84,7 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 		"SIMPLE_IDP_LISTEN=" + listenAddr,
 		"SIMPLE_IDP_ISSUER=" + issuer,
 		"SIMPLE_IDP_TITLE=Integration Test Provider",
+		"SIMPLE_IDP_KEY_B64=" + signingKey,
 	}
 	for _, client := range config.Clients {
 		prefix := "SIMPLE_IDP_CLIENT_" + client.Label + "_"

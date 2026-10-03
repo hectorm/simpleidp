@@ -413,14 +413,16 @@ func testLogoutValidationAndErrorHandling(t *testing.T) {
 			CodeVerifier: request.Verifier,
 		})
 
-		req, err := http.NewRequest(http.MethodGet, provider.endpoint("/end-session")+"?"+url.Values{
-			"id_token_hint": {token.IDToken},
+		browser := newProviderBrowser(t, provider)
+		req, err := http.NewRequest(http.MethodGet, browser.endpoint("/end-session")+"?"+url.Values{
+			"id_token_hint":            {token.IDToken},
+			"post_logout_redirect_uri": {webClientPostLogoutRedirect},
 		}.Encode(), nil)
 		if err != nil {
 			t.Fatalf("failed to create logout request: %v", err)
 		}
 
-		resp := provider.do(t, provider.redirectless, req)
+		resp := browser.do(t, browser.redirectless, req)
 		body := readBody(t, resp)
 		expectNoLogoutRedirect(t, resp, body)
 	})
