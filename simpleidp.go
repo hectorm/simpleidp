@@ -1906,7 +1906,7 @@ func (p *identityProvider) sessionIDFromCookie(value string) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for sessionID, currentSession := range p.sessions {
-		if currentSession.cookieDigest == digest {
+		if subtle.ConstantTimeCompare(currentSession.cookieDigest[:], digest[:]) == 1 {
 			return sessionID
 		}
 	}
@@ -1965,12 +1965,12 @@ func (p *identityProvider) validateCSRFToken(token, ownerID string) bool {
 func (p *identityProvider) revokeGrant(code string) {
 	delete(p.pendingCodes, code)
 	for k, v := range p.accessTokens {
-		if v.code == code {
+		if subtle.ConstantTimeCompare([]byte(v.code), []byte(code)) == 1 {
 			delete(p.accessTokens, k)
 		}
 	}
 	for k, v := range p.refreshTokens {
-		if v.code == code {
+		if subtle.ConstantTimeCompare([]byte(v.code), []byte(code)) == 1 {
 			delete(p.refreshTokens, k)
 		}
 	}
