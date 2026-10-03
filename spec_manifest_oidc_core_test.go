@@ -74,7 +74,7 @@ var oidcCoreSections = []specSection{
 	{Spec: "OIDC Core 1.0", Section: "5", Title: "Claims", Notes: "Covered by the applicable subsections below."},
 	{Spec: "OIDC Core 1.0", Section: "5.1", Title: "Standard Claims", Applicable: true, Run: testStandardClaims},
 	{Spec: "OIDC Core 1.0", Section: "5.1.1", Title: "Address Claim", Notes: "The address scope and claim are not implemented."},
-	{Spec: "OIDC Core 1.0", Section: "5.1.2", Title: "Additional Claims", Notes: "The product adds groups and roles claims; their inclusion in access tokens is covered by RFC 9068 section 2.2.3.1."},
+	{Spec: "OIDC Core 1.0", Section: "5.1.2", Title: "Additional Claims", Applicable: true, Notes: "The groups and roles claims in access tokens are covered by RFC 9068 section 2.2.3.1, and in introspection responses by RFC 7662 section 5.", Run: testAdditionalClaims},
 	{Spec: "OIDC Core 1.0", Section: "5.2", Title: "Claims Languages and Scripts", Notes: "Localized claims are not implemented; ui_locales and claims_locales are ignored."},
 	{Spec: "OIDC Core 1.0", Section: "5.3", Title: "UserInfo Endpoint", Notes: "Covered by the applicable subsections below; CORS is not implemented, and TLS is out of scope."},
 	{Spec: "OIDC Core 1.0", Section: "5.3.1", Title: "UserInfo Request", Applicable: true, Run: testUserInfoRequest},

@@ -10,11 +10,13 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json/v2"
 	"encoding/pem"
 	"fmt"
 	"html"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -162,6 +164,57 @@ func testStandardClaims(t *testing.T) {
 			})
 		}
 	})
+}
+
+func testAdditionalClaims(t *testing.T) {
+	config := defaultProviderConfig()
+	roles := []string{"reader", "operator"}
+	config.Users[0].Roles = roles
+	provider := startProvider(t, config)
+
+	for _, scope := range []string{"openid", "openid groups", "openid roles", "openid groups roles"} {
+		t.Run(scope, func(t *testing.T) {
+			request := newDefaultConfidentialAuthorizationRequest("additional-claims-" + scope)
+			request.Scope = scope
+			token := authorizeAndExchange(t, provider, request, tokenRequest{
+				ClientID:     request.ClientID,
+				ClientSecret: webClientSecret,
+				CodeVerifier: request.Verifier,
+			})
+			idToken := verifyIDToken(t, provider, token.IDToken)
+			idTokenRaw := decodeJWTClaims(t, token.IDToken)
+
+			resp := provider.getUserInfoResponse(t, token.AccessToken)
+			body := readBody(t, resp)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+			}
+			var userInfo userInfoClaims
+			if err := json.Unmarshal(body, &userInfo); err != nil {
+				t.Fatalf("failed to decode userinfo response: %v\nbody=%s", err, body)
+			}
+			userInfoRaw := decodeJSONMap(t, body)
+
+			for _, claim := range []struct {
+				source string
+				name   string
+				raw    map[string]any
+				got    []string
+				want   []string
+			}{
+				{"id token", "groups", idTokenRaw, idToken.Groups, testGroups},
+				{"id token", "roles", idTokenRaw, idToken.Roles, roles},
+				{"userinfo", "groups", userInfoRaw, userInfo.Groups, testGroups},
+				{"userinfo", "roles", userInfoRaw, userInfo.Roles, roles},
+			} {
+				granted := slices.Contains(strings.Fields(scope), claim.name)
+				_, present := claim.raw[claim.name]
+				if present != granted || (granted && !slices.Equal(claim.got, claim.want)) {
+					t.Fatalf("%s claim %s for scope %q: got %#v (present=%t), want %#v (present=%t)", claim.source, claim.name, scope, claim.got, present, claim.want, granted)
+				}
+			}
+		})
+	}
 }
 
 func testUserInfoRequest(t *testing.T) {
