@@ -8,6 +8,7 @@ package simpleidp
 // OIDC Back-Channel Logout 1.0: https://openid.net/specs/openid-connect-backchannel-1_0.html
 // OAuth 2.1 draft 15: https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-15.txt
 // RFC 7662: https://www.rfc-editor.org/rfc/rfc7662.txt
+// RFC 9068: https://www.rfc-editor.org/rfc/rfc9068.txt
 
 import (
 	"fmt"
@@ -105,6 +106,17 @@ var expectedRFC7009Sections = []string{
 	"7", "7.1", "7.2",
 }
 
+var expectedRFC9068Sections = []string{
+	"1", "1.1", "1.2",
+	"2", "2.1", "2.2", "2.2.1", "2.2.2", "2.2.3", "2.2.3.1",
+	"3",
+	"4",
+	"5",
+	"6",
+	"7", "7.1", "7.1.1", "7.2", "7.2.1", "7.2.1.1", "7.2.1.2", "7.2.1.3",
+	"8", "8.1", "8.2",
+}
+
 type specSection struct {
 	Spec       string
 	Section    string
@@ -155,6 +167,7 @@ func allSpecSections() []specSection {
 	sections = append(sections, oauth21Sections...)
 	sections = append(sections, rfc7662Sections...)
 	sections = append(sections, rfc7009Sections...)
+	sections = append(sections, rfc9068Sections...)
 	return sections
 }
 
@@ -220,6 +233,7 @@ func TestSpecCoverageManifest(t *testing.T) {
 		"OAuth 2.1",
 		"RFC 7662",
 		"RFC 7009",
+		"RFC 9068",
 	} {
 		summary := summaries[spec]
 		t.Logf("%s: %d applicable sections, %d documented out-of-scope sections", spec, summary.applicable, summary.documented)
@@ -232,4 +246,5 @@ func TestSpecCoverageManifest(t *testing.T) {
 	assertExactManifestSections(t, "OAuth 2.1", expectedOAuth21Sections, sectionsBySpec["OAuth 2.1"])
 	assertExactManifestSections(t, "RFC 7662", expectedRFC7662Sections, sectionsBySpec["RFC 7662"])
 	assertExactManifestSections(t, "RFC 7009", expectedRFC7009Sections, sectionsBySpec["RFC 7009"])
+	assertExactManifestSections(t, "RFC 9068", expectedRFC9068Sections, sectionsBySpec["RFC 9068"])
 }

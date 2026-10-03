@@ -51,7 +51,7 @@ func testOAuth21ClientIdentifier(t *testing.T) {
 
 	t.Run("rejects incomplete client configuration for every supported field", func(t *testing.T) {
 		for _, field := range []string{
-			"ID", "SECRET", "REDIRECT_URL", "POST_LOGOUT_REDIRECT_URL",
+			"ID", "SECRET", "AUDIENCE", "REDIRECT_URL", "POST_LOGOUT_REDIRECT_URL",
 			"BACKCHANNEL_LOGOUT_URI", "BACKCHANNEL_LOGOUT_SESSION_REQUIRED",
 		} {
 			t.Run(field, func(t *testing.T) {
@@ -206,6 +206,79 @@ func testOAuth21AuthorizationErrorResponse(t *testing.T) {
 
 func testOAuth21TokenEndpointExtension(t *testing.T) {
 	testTokenRequestValidation(t)
+}
+
+func testOAuth21ClientCredentialsGrant(t *testing.T) {
+	config := defaultProviderConfig()
+	config.Clients = append(config.Clients, clientConfig{
+		Label:    "SERVICE",
+		ID:       "service-client",
+		Secret:   "service-secret",
+		Audience: "https://api.example",
+	})
+	provider := startProvider(t, config)
+
+	t.Run("issues access tokens to confidential clients", func(t *testing.T) {
+		token := exchangeClientCredentials(t, provider, tokenRequest{
+			ClientID:     "service-client",
+			ClientSecret: "service-secret",
+			Scope:        "orders:read",
+		})
+		if token.TokenType != "Bearer" || token.Scope != "orders:read" || token.RefreshToken != "" || token.IDToken != "" {
+			t.Fatalf("unexpected token response: %#v", token)
+		}
+		claims := verifyAccessToken(t, provider, token.AccessToken)
+		if claims.Sub != "service-client" || claims.ClientID != "service-client" || claims.Aud != "https://api.example" || claims.Scope != "orders:read" {
+			t.Fatalf("unexpected access token claims: %#v", claims)
+		}
+	})
+
+	t.Run("identifies the client instead of an end-user", func(t *testing.T) {
+		token := exchangeClientCredentials(t, provider, tokenRequest{
+			ClientID:     "service-client",
+			ClientSecret: "service-secret",
+		})
+		response := introspectToken(t, provider, introspectionRequest{
+			ClientID:     "service-client",
+			ClientSecret: "service-secret",
+			Token:        token.AccessToken,
+		})
+		if !response.Active || response.Sub != "service-client" || response.ClientID != "service-client" {
+			t.Fatalf("unexpected introspection response: %#v", response)
+		}
+
+		resp := provider.getUserInfoResponse(t, token.AccessToken)
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusForbidden, body)
+		}
+	})
+}
+
+func testOAuth21ClientCredentialsRequest(t *testing.T) {
+	provider := startProvider(t, defaultProviderConfig())
+
+	t.Run("rejects public clients", func(t *testing.T) {
+		errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
+			ClientID:  nativeClientID,
+			GrantType: "client_credentials",
+		}), http.StatusBadRequest)
+		if errResp.Error != "unauthorized_client" {
+			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "unauthorized_client")
+		}
+	})
+
+	t.Run("rejects the openid scope", func(t *testing.T) {
+		errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
+			ClientID:     webClientID,
+			ClientSecret: webClientSecret,
+			GrantType:    "client_credentials",
+			Scope:        "openid",
+		}), http.StatusBadRequest)
+		if errResp.Error != "invalid_scope" {
+			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_scope")
+		}
+	})
 }
 
 func testOAuth21RefreshTokenGrant(t *testing.T) {

@@ -102,6 +102,9 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 		if client.Secret != "" {
 			env = append(env, prefix+"SECRET="+client.Secret)
 		}
+		if client.Audience != "" {
+			env = append(env, prefix+"AUDIENCE="+client.Audience)
+		}
 		if client.PostLogoutRedirectURL != "" {
 			env = append(env, prefix+"POST_LOGOUT_REDIRECT_URL="+client.PostLogoutRedirectURL)
 		}
@@ -647,6 +650,23 @@ func exchangeRefreshToken(t *testing.T, provider *providerProcess, request token
 	return token
 }
 
+func exchangeClientCredentials(t *testing.T, provider *providerProcess, request tokenRequest) tokenResponse {
+	t.Helper()
+
+	request.GrantType = "client_credentials"
+	resp := provider.postToken(t, request)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("token status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+	}
+
+	var token tokenResponse
+	if err := json.Unmarshal(body, &token); err != nil {
+		t.Fatalf("failed to decode token response: %v\nbody=%s", err, body)
+	}
+	return token
+}
+
 func verifyIDToken(t *testing.T, provider *providerProcess, idToken string) idTokenClaims {
 	t.Helper()
 
@@ -680,6 +700,43 @@ func verifyIDToken(t *testing.T, provider *providerProcess, idToken string) idTo
 	var claims idTokenClaims
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		t.Fatalf("failed to decode id token claims: %v\npayload=%s", err, payload)
+	}
+	return claims
+}
+
+func verifyAccessToken(t *testing.T, provider *providerProcess, accessToken string) accessTokenClaims {
+	t.Helper()
+
+	jwks := fetchJWKS(t, provider)
+	if len(jwks.Keys) != 1 {
+		t.Fatalf("expected a single jwk, got %#v", jwks.Keys)
+	}
+	publicKey := rsaPublicKeyFromJWK(t, jwks.Keys[0])
+
+	parts := strings.Split(accessToken, ".")
+	if len(parts) != 3 {
+		t.Fatalf("invalid access token format: %q", accessToken)
+	}
+
+	signingInput := parts[0] + "." + parts[1]
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		t.Fatalf("failed to decode access token signature: %v", err)
+	}
+
+	digest := sha256.Sum256([]byte(signingInput))
+	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
+		t.Fatalf("failed to verify access token signature: %v", err)
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("failed to decode access token payload: %v", err)
+	}
+
+	var claims accessTokenClaims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatalf("failed to decode access token claims: %v\npayload=%s", err, payload)
 	}
 	return claims
 }

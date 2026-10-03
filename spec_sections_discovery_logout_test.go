@@ -48,6 +48,9 @@ func testProviderMetadata(t *testing.T) {
 	if !slices.Contains(discovery.GrantTypesSupported, "refresh_token") {
 		t.Fatalf("grant_types_supported missing refresh_token: %#v", discovery.GrantTypesSupported)
 	}
+	if !slices.Contains(discovery.GrantTypesSupported, "client_credentials") {
+		t.Fatalf("grant_types_supported missing client_credentials: %#v", discovery.GrantTypesSupported)
+	}
 	if !slices.Contains(discovery.SubjectTypesSupported, "public") {
 		t.Fatalf("subject_types_supported missing public: %#v", discovery.SubjectTypesSupported)
 	}

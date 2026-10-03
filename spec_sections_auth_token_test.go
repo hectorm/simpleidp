@@ -1540,7 +1540,7 @@ func testTokenErrorResponse(t *testing.T) {
 
 	t.Run("returns unsupported_grant_type for unsupported grants", func(t *testing.T) {
 		form := url.Values{
-			"grant_type":    {"client_credentials"},
+			"grant_type":    {"password"},
 			"client_id":     {webClientID},
 			"client_secret": {webClientSecret},
 		}

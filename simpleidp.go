@@ -1,5 +1,7 @@
 // Minimal OIDC Identity Provider that authenticates users via a login form against
 // static credentials and completes the full OIDC Authorization Code flow with PKCE.
+// Confidential clients can also use the client credentials grant, and access tokens
+// are JWTs (RFC 9068) that APIs can validate against the JWKS endpoint.
 //
 // Configuration is entirely through environment variables:
 //
@@ -22,7 +24,8 @@
 //
 // SIMPLE_IDP_CLIENT_<LABEL>_ID                                  - client ID
 // SIMPLE_IDP_CLIENT_<LABEL>_SECRET                              - client secret (optional for loopback/native clients)
-// SIMPLE_IDP_CLIENT_<LABEL>_REDIRECT_URL                        - allowed redirect URIs (whitespace-separated)
+// SIMPLE_IDP_CLIENT_<LABEL>_AUDIENCE                            - "aud" claim of access tokens (default: client ID)
+// SIMPLE_IDP_CLIENT_<LABEL>_REDIRECT_URL                        - allowed redirect URIs (whitespace-separated, optional with a secret)
 // SIMPLE_IDP_CLIENT_<LABEL>_POST_LOGOUT_REDIRECT_URL            - allowed post-logout redirect URIs (whitespace-separated, optional)
 // SIMPLE_IDP_CLIENT_<LABEL>_BACKCHANNEL_LOGOUT_URI              - back-channel logout URI (optional)
 // SIMPLE_IDP_CLIENT_<LABEL>_BACKCHANNEL_LOGOUT_SESSION_REQUIRED - require "sid" in logout token (optional, default "false")
@@ -65,6 +68,7 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
+	"maps"
 	"math"
 	"math/big"
 	"net"
@@ -108,6 +112,7 @@ type client struct {
 	id                               string
 	secret                           string
 	isPublic                         bool
+	audience                         string
 	redirectURLs                     []url.URL
 	postLogoutRedirectURLs           []url.URL
 	backchannelLogoutURI             url.URL
@@ -463,7 +468,7 @@ func (p *identityProvider) handleDiscovery(w http.ResponseWriter, r *http.Reques
 		ScopesSupported:                   []string{"openid", "profile", "email", "groups", "roles"},
 		ResponseTypesSupported:            []string{"code"},
 		ResponseModesSupported:            []string{"query"},
-		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
+		GrantTypesSupported:               []string{"authorization_code", "refresh_token", "client_credentials"},
 		SubjectTypesSupported:             []string{"public"},
 		IDTokenSigningAlgValuesSupported:  []string{"RS256"},
 		TokenEndpointAuthMethodsSupported: []string{"none", "client_secret_basic", "client_secret_post"},
@@ -707,6 +712,8 @@ func (p *identityProvider) handleToken(w http.ResponseWriter, r *http.Request) {
 		p.exchangeAuthorizationCode(w, r, client)
 	case "refresh_token":
 		p.exchangeRefreshToken(w, r, client)
+	case "client_credentials":
+		p.exchangeClientCredentials(w, r, client)
 	default:
 		writeTokenError(w, http.StatusBadRequest, "unsupported_grant_type", "Unsupported grant type")
 	}
@@ -812,8 +819,11 @@ func (p *identityProvider) handleIntrospect(w http.ResponseWriter, r *http.Reque
 	storedRefreshToken, refreshTokenKnown := p.refreshTokens[token]
 	p.mu.Unlock()
 
-	writeActiveResponse := func(user user, clientID, scope string, expiry time.Time, tokenType string) {
-		response := p.buildClaimsForScope(user, scope)
+	writeActiveResponse := func(userLabel, clientID, scope string, expiry time.Time, tokenType string) {
+		response := map[string]any{"sub": clientID}
+		if user, ok := p.lookupUser(userLabel); ok {
+			response = p.buildClaimsForScope(user, scope)
+		}
 		response["active"] = true
 		if tokenType != "" {
 			response["token_type"] = tokenType
@@ -836,16 +846,14 @@ func (p *identityProvider) handleIntrospect(w http.ResponseWriter, r *http.Reque
 		if !accessTokenKnown || storedAccessToken.clientID != client.id {
 			return false
 		}
-		user, _ := p.lookupUser(storedAccessToken.userLabel)
-		writeActiveResponse(user, storedAccessToken.clientID, storedAccessToken.scope, storedAccessToken.expiry, "Bearer")
+		writeActiveResponse(storedAccessToken.userLabel, storedAccessToken.clientID, storedAccessToken.scope, storedAccessToken.expiry, "Bearer")
 		return true
 	}
 	writeActiveRefreshToken := func() bool {
 		if !refreshTokenKnown || !storedRefreshToken.consumedAt.IsZero() || storedRefreshToken.clientID != client.id {
 			return false
 		}
-		user, _ := p.lookupUser(storedRefreshToken.userLabel)
-		writeActiveResponse(user, storedRefreshToken.clientID, storedRefreshToken.scope, refreshTokenExpiry(storedRefreshToken), "")
+		writeActiveResponse(storedRefreshToken.userLabel, storedRefreshToken.clientID, storedRefreshToken.scope, refreshTokenExpiry(storedRefreshToken), "")
 		return true
 	}
 
@@ -1669,7 +1677,11 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 	}
 
 	user, _ := p.lookupUser(pendingCode.userLabel)
-	accessTokenValue := rand.Text()
+	accessTokenValue, err := p.mintAccessToken(client, user, pendingCode.scope)
+	if err != nil {
+		http.Error(w, "Failed to mint access token", http.StatusInternalServerError)
+		return
+	}
 	refreshTokenValue := rand.Text()
 	idToken, err := p.mintIDToken(user, client, pendingCode, accessTokenValue)
 	if err != nil {
@@ -1761,12 +1773,15 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 	}
 
 	user, _ := p.lookupUser(storedRefreshToken.userLabel)
-	newAccessTokenValue := rand.Text()
+	newAccessTokenValue, err := p.mintAccessToken(client, user, effectiveAccessScope)
+	if err != nil {
+		http.Error(w, "Failed to mint access token", http.StatusInternalServerError)
+		return
+	}
 	newRefreshTokenValue := rand.Text()
 
 	idToken := ""
 	if slices.Contains(strings.Fields(effectiveAccessScope), "openid") {
-		var err error
 		idToken, err = p.mintIDToken(user, client, pendingCode{
 			scope:           effectiveAccessScope,
 			sessionID:       storedRefreshToken.sessionID,
@@ -1818,6 +1833,44 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 	}
 	if idToken != "" {
 		response["id_token"] = idToken
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (p *identityProvider) exchangeClientCredentials(w http.ResponseWriter, r *http.Request, client client) {
+	if client.isPublic {
+		writeTokenError(w, http.StatusBadRequest, "unauthorized_client", "Public clients cannot use the client credentials grant")
+		return
+	}
+	scopes := strings.Fields(r.PostForm.Get("scope"))
+	if slices.Contains(scopes, "openid") {
+		writeTokenError(w, http.StatusBadRequest, "invalid_scope", "The openid scope requires an end-user")
+		return
+	}
+	scope := strings.Join(scopes, " ")
+
+	accessTokenValue, err := p.mintAccessToken(client, user{}, scope)
+	if err != nil {
+		http.Error(w, "Failed to mint access token", http.StatusInternalServerError)
+		return
+	}
+
+	p.mu.Lock()
+	p.accessTokens[accessTokenValue] = accessToken{
+		clientID: client.id,
+		scope:    scope,
+		expiry:   time.Now().Add(p.accessTokenTTL),
+	}
+	p.removeExpiredState()
+	p.mu.Unlock()
+
+	response := map[string]any{
+		"access_token": accessTokenValue,
+		"token_type":   "Bearer",
+		"expires_in":   int(p.accessTokenTTL.Seconds()),
+	}
+	if scope != "" {
+		response["scope"] = scope
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -2211,15 +2264,32 @@ func (p *identityProvider) resolveBearerToken(token string) (user, accessToken, 
 
 // -------------------------------------------------------------------------- //
 
+func (p *identityProvider) mintAccessToken(client client, user user, scope string) (string, error) {
+	now := time.Now().Unix()
+
+	payload := map[string]any{
+		"iss":       p.issuer,
+		"sub":       client.id,
+		"aud":       client.audience,
+		"client_id": client.id,
+		"iat":       now,
+		"exp":       now + int64(p.accessTokenTTL.Seconds()),
+		"jti":       rand.Text(),
+	}
+	if scope != "" {
+		payload["scope"] = scope
+	}
+	if user.label != "" {
+		maps.Copy(payload, p.buildClaimsForScope(user, scope))
+	}
+
+	return p.signJWT("at+jwt", payload)
+}
+
 func (p *identityProvider) mintIDToken(user user, client client, code pendingCode, accessToken string) (string, error) {
 	now := time.Now().Unix()
 
 	atHash := sha256.Sum256([]byte(accessToken))
-	header := map[string]string{
-		"alg": "RS256",
-		"typ": "JWT",
-		"kid": p.keyID,
-	}
 	payload := map[string]any{
 		"iss":       p.issuer,
 		"sub":       user.sub,
@@ -2241,27 +2311,7 @@ func (p *identityProvider) mintIDToken(user user, client client, code pendingCod
 		}
 	}
 
-	headerJSON, err := json.Marshal(header)
-	if err != nil {
-		return "", err
-	}
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-
-	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
-	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
-
-	signingInput := headerB64 + "." + payloadB64
-	digest := sha256.Sum256([]byte(signingInput))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, p.privKey, crypto.SHA256, digest[:])
-	if err != nil {
-		return "", err
-	}
-	signatureB64 := base64.RawURLEncoding.EncodeToString(signature)
-
-	return signingInput + "." + signatureB64, nil
+	return p.signJWT("JWT", payload)
 }
 
 func (p *identityProvider) mintLogoutToken(user user, client client, sessionID string) (string, error) {
@@ -2270,11 +2320,6 @@ func (p *identityProvider) mintLogoutToken(user user, client client, sessionID s
 	}
 	now := time.Now().Unix()
 
-	header := map[string]string{
-		"alg": "RS256",
-		"typ": "logout+jwt",
-		"kid": p.keyID,
-	}
 	payload := map[string]any{
 		"iss": p.issuer,
 		"sub": user.sub,
@@ -2288,6 +2333,16 @@ func (p *identityProvider) mintLogoutToken(user user, client client, sessionID s
 	}
 	if sessionID != "" {
 		payload["sid"] = sessionID
+	}
+
+	return p.signJWT("logout+jwt", payload)
+}
+
+func (p *identityProvider) signJWT(typ string, payload map[string]any) (string, error) {
+	header := map[string]string{
+		"alg": "RS256",
+		"typ": typ,
+		"kid": p.keyID,
 	}
 
 	headerJSON, err := json.Marshal(header)
@@ -2742,6 +2797,7 @@ func loadClients(environ []string, lookupEnv func(string) string) (map[string]cl
 	labels := scanLabels(environ, prefix,
 		"_ID",
 		"_SECRET",
+		"_AUDIENCE",
 		"_REDIRECT_URL",
 		"_POST_LOGOUT_REDIRECT_URL",
 		"_BACKCHANNEL_LOGOUT_URI",
@@ -2752,16 +2808,21 @@ func loadClients(environ []string, lookupEnv func(string) string) (map[string]cl
 	for label := range labels {
 		id := lookupEnv(prefix + label + "_ID")
 		secret := lookupEnv(prefix + label + "_SECRET")
+		audience := envOr(lookupEnv, prefix+label+"_AUDIENCE", id)
 		rawRedirectURL := lookupEnv(prefix + label + "_REDIRECT_URL")
-		if id == "" || rawRedirectURL == "" {
+		if id == "" || (secret == "" && rawRedirectURL == "") {
 			return nil, fmt.Errorf("incomplete client configuration for label %q", label)
 		}
 		if _, dup := clients[id]; dup {
 			return nil, fmt.Errorf("duplicate client ID %q", id)
 		}
-		redirectURLs, err := validateRedirectURLs(rawRedirectURL)
-		if err != nil {
-			return nil, fmt.Errorf("client %q redirect URL: %w", label, err)
+		var redirectURLs []url.URL
+		var err error
+		if rawRedirectURL != "" {
+			redirectURLs, err = validateRedirectURLs(rawRedirectURL)
+			if err != nil {
+				return nil, fmt.Errorf("client %q redirect URL: %w", label, err)
+			}
 		}
 		isPublic := secret == ""
 		if isPublic {
@@ -2791,6 +2852,7 @@ func loadClients(environ []string, lookupEnv func(string) string) (map[string]cl
 			id:                               id,
 			secret:                           secret,
 			isPublic:                         isPublic,
+			audience:                         audience,
 			redirectURLs:                     redirectURLs,
 			postLogoutRedirectURLs:           postLogoutRedirectURLs,
 			backchannelLogoutURI:             backchannelLogoutURI,

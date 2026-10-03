@@ -49,6 +49,7 @@ type clientConfig struct {
 	Label                            string
 	ID                               string
 	Secret                           string
+	Audience                         string
 	RedirectURL                      string
 	PostLogoutRedirectURL            string
 	BackchannelLogoutURI             string
@@ -197,6 +198,20 @@ type idTokenClaims struct {
 	Picture           string   `json:"picture"`
 	Locale            string   `json:"locale"`
 	Groups            []string `json:"groups"`
+}
+
+type accessTokenClaims struct {
+	Iss      string   `json:"iss"`
+	Sub      string   `json:"sub"`
+	Aud      string   `json:"aud"`
+	ClientID string   `json:"client_id"`
+	Scope    string   `json:"scope"`
+	Exp      int64    `json:"exp"`
+	Iat      int64    `json:"iat"`
+	Jti      string   `json:"jti"`
+	Email    string   `json:"email"`
+	Name     string   `json:"name"`
+	Groups   []string `json:"groups"`
 }
 
 type logoutTokenClaims struct {

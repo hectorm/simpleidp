@@ -1,6 +1,6 @@
 # Simple IdP
 
-Minimal OIDC Identity Provider that implements the Authorization Code flow with PKCE.
+Minimal OIDC Identity Provider that implements the Authorization Code flow with PKCE and the Client Credentials grant.
 
 ## Why
 
@@ -50,14 +50,15 @@ All configuration is done through environment variables. At least one client and
 
 Clients are configured with a label prefix. The label is arbitrary and only used for grouping.
 
-| Variable                                                        | Description                                                        |
-| --------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `SIMPLE_IDP_CLIENT_<LABEL>_ID`                                  | Client ID                                                          |
-| `SIMPLE_IDP_CLIENT_<LABEL>_SECRET`                              | Client secret (optional for loopback/native clients)               |
-| `SIMPLE_IDP_CLIENT_<LABEL>_REDIRECT_URL`                        | Allowed redirect URIs (whitespace-separated)                       |
-| `SIMPLE_IDP_CLIENT_<LABEL>_POST_LOGOUT_REDIRECT_URL`            | Allowed post-logout redirect URIs (whitespace-separated, optional) |
-| `SIMPLE_IDP_CLIENT_<LABEL>_BACKCHANNEL_LOGOUT_URI`              | Back-channel logout URI (optional)                                 |
-| `SIMPLE_IDP_CLIENT_<LABEL>_BACKCHANNEL_LOGOUT_SESSION_REQUIRED` | Require `sid` in logout token (optional, default `false`)          |
+| Variable                                                        | Description                                                          |
+| --------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `SIMPLE_IDP_CLIENT_<LABEL>_ID`                                  | Client ID                                                            |
+| `SIMPLE_IDP_CLIENT_<LABEL>_SECRET`                              | Client secret (optional for loopback/native clients)                 |
+| `SIMPLE_IDP_CLIENT_<LABEL>_AUDIENCE`                            | `aud` claim of access tokens (default: client ID)                    |
+| `SIMPLE_IDP_CLIENT_<LABEL>_REDIRECT_URL`                        | Allowed redirect URIs (whitespace-separated, optional with a secret) |
+| `SIMPLE_IDP_CLIENT_<LABEL>_POST_LOGOUT_REDIRECT_URL`            | Allowed post-logout redirect URIs (whitespace-separated, optional)   |
+| `SIMPLE_IDP_CLIENT_<LABEL>_BACKCHANNEL_LOGOUT_URI`              | Back-channel logout URI (optional)                                   |
+| `SIMPLE_IDP_CLIENT_<LABEL>_BACKCHANNEL_LOGOUT_SESSION_REQUIRED` | Require `sid` in logout token (optional, default `false`)            |
 
 ### Users
 
