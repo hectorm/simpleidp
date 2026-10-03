@@ -62,7 +62,7 @@ var oauth21Sections = []specSection{
 	{Spec: "OAuth 2.1", Section: "5.2", Title: "Access Token Validation", Applicable: true, Run: testOAuth21AccessTokenValidation},
 	{Spec: "OAuth 2.1", Section: "5.3", Title: "Error Response", Notes: "Concrete challenge formatting and bearer error codes are covered by sections 5.3.1 and 5.3.2 instead of a standalone umbrella test."},
 	{Spec: "OAuth 2.1", Section: "5.3.1", Title: "The WWW-Authenticate Response Header Field", Applicable: true, Run: testOAuth21WWWAuthenticateResponseHeaderField},
-	{Spec: "OAuth 2.1", Section: "5.3.2", Title: "Error Codes", Applicable: true, Notes: "The single UserInfo resource exercised by this suite surfaces invalid_request and invalid_token; it does not expose a distinct higher-privilege resource variant that would trigger insufficient_scope.", Run: testOAuth21ErrorCodes},
+	{Spec: "OAuth 2.1", Section: "5.3.2", Title: "Error Codes", Applicable: true, Notes: "The single UserInfo resource exercised by this suite surfaces invalid_request, invalid_token, and insufficient_scope for access tokens whose refreshed scope no longer includes openid.", Run: testOAuth21ErrorCodes},
 	{Spec: "OAuth 2.1", Section: "6", Title: "Extensibility", Notes: "Extensibility sections are not direct runtime integration-test targets for this product."},
 	{Spec: "OAuth 2.1", Section: "6.1", Title: "Defining Access Token Types", Notes: "Access-token type extensibility and registry mechanics are not direct runtime integration-test targets."},
 	{Spec: "OAuth 2.1", Section: "6.1.1", Title: "Registered Access Token Types", Notes: "IANA registry contents are not runtime integration-test targets."},

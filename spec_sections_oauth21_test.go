@@ -409,6 +409,21 @@ func testOAuth21ErrorCodes(t *testing.T) {
 	if got := invalid.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="invalid_token"`) {
 		t.Fatalf("expected invalid_token challenge, got %q", got)
 	}
+
+	refreshed := exchangeRefreshToken(t, provider, tokenRequest{
+		ClientID:     request.ClientID,
+		ClientSecret: webClientSecret,
+		RefreshToken: token.RefreshToken,
+		Scope:        "profile",
+	})
+	insufficient := provider.getUserInfoResponse(t, refreshed.AccessToken)
+	body = readBody(t, insufficient)
+	if insufficient.StatusCode != http.StatusForbidden {
+		t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", insufficient.Status, http.StatusForbidden, body)
+	}
+	if got := insufficient.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="insufficient_scope"`) {
+		t.Fatalf("expected insufficient_scope challenge, got %q", got)
+	}
 }
 
 func testOAuth21DontStoreBearerTokensInHTTPCookies(t *testing.T) {

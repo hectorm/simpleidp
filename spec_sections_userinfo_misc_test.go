@@ -215,6 +215,30 @@ func testUserInfoErrorResponse(t *testing.T) {
 		}
 	})
 
+	t.Run("returns insufficient_scope for access tokens without the openid scope", func(t *testing.T) {
+		request := newDefaultConfidentialAuthorizationRequest("userinfo-error-response-insufficient-scope")
+		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+		refreshed := exchangeRefreshToken(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			RefreshToken: token.RefreshToken,
+			Scope:        "profile",
+		})
+
+		resp := provider.getUserInfoResponse(t, refreshed.AccessToken)
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusForbidden, body)
+		}
+		if got := resp.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="insufficient_scope"`) || !strings.Contains(got, `scope="openid"`) {
+			t.Fatalf("expected insufficient_scope challenge for openid, got %q", got)
+		}
+	})
+
 	t.Run("returns invalid_request for malformed bearer authorization headers", func(t *testing.T) {
 		request := newDefaultConfidentialAuthorizationRequest("userinfo-error-response-malformed-header")
 		token := authorizeAndExchange(t, provider, request, tokenRequest{

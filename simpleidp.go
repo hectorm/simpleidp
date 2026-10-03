@@ -683,6 +683,11 @@ func (p *identityProvider) handleUserInfo(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	if !slices.Contains(strings.Fields(bearerToken.scope), "openid") {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="userinfo", error="insufficient_scope", error_description="The access token does not grant the openid scope", scope="openid"`)
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
 	writeJSON(w, http.StatusOK, p.buildClaimsForScope(user, bearerToken.scope))
 }
 
