@@ -752,7 +752,7 @@ func introspectToken(t *testing.T, provider *providerProcess, request introspect
 	return result
 }
 
-func (p *providerProcess) currentSessionID(t *testing.T) string {
+func (p *providerProcess) currentSessionCookie(t *testing.T) *http.Cookie {
 	t.Helper()
 
 	issuerURL, err := url.Parse(p.endpoint("/"))
@@ -761,11 +761,16 @@ func (p *providerProcess) currentSessionID(t *testing.T) string {
 	}
 	for _, cookie := range p.http.Jar.Cookies(issuerURL) {
 		if cookie.Name == p.idp.cookieName(sessionCookieBaseName) {
-			return p.idp.sessionIDFromCookie(cookie.Value)
+			return cookie
 		}
 	}
 	t.Fatalf("session cookie %q not found", p.idp.cookieName(sessionCookieBaseName))
-	return ""
+	return nil
+}
+
+func (p *providerProcess) currentSessionID(t *testing.T) string {
+	t.Helper()
+	return p.idp.sessionIDFromCookie(p.currentSessionCookie(t).Value)
 }
 
 func (p *providerProcess) expireSessionMax(t *testing.T) {

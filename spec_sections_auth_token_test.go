@@ -462,6 +462,32 @@ func testAuthorizationServerAuthenticatesEndUser(t *testing.T) {
 		}
 	})
 
+	t.Run("rotates the session cookie when the same user reauthenticates", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		request := newDefaultConfidentialAuthorizationRequest("reauthentication-cookie-rotation")
+		_ = authorizeAndLogin(t, provider, request)
+		sessionID := provider.currentSessionID(t)
+		previousCookie := provider.currentSessionCookie(t)
+
+		_ = authorizeAndLogin(t, provider, request)
+		if provider.currentSessionCookie(t).Value == previousCookie.Value {
+			t.Fatal("expected a new session cookie after reauthentication")
+		}
+		if got := provider.currentSessionID(t); got != sessionID {
+			t.Fatalf("session changed after reauthentication: got %q, want %q", got, sessionID)
+		}
+
+		request.Prompt = "none"
+		req, err := http.NewRequest(http.MethodGet, provider.endpoint("/authorize")+"?"+authorizeParams(request).Encode(), nil)
+		if err != nil {
+			t.Fatalf("failed to create authorization request: %v", err)
+		}
+		req.AddCookie(previousCookie)
+		browser := newProviderBrowser(t, provider)
+		expectAuthorizationErrorRedirect(t, browser.do(t, browser.redirectless, req), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "login_required")
+		expectAuthorizationCodeRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, provider.issuer)
+	})
+
 	t.Run("returns a positive response for prompt none when a session exists", func(t *testing.T) {
 		provider := startProvider(t, defaultProviderConfig())
 		initialRequest := newDefaultConfidentialAuthorizationRequest("prompt-none-session-initial")

@@ -129,6 +129,7 @@ type user struct {
 
 type session struct {
 	username        string
+	cookieDigest    [sha256.Size]byte
 	clientIDs       map[string]struct{}
 	authenticatedAt time.Time
 	lastSeenAt      time.Time
@@ -555,7 +556,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		nonce:           nonce,
 		consentRequired: consentRequired,
 	}
-	if r.Method == http.MethodPost && !resubmitted && sessionID == "" && username == "" && password == "" {
+	if r.Method == http.MethodPost && !resubmitted && !p.hasSessionCookie(r) && username == "" && password == "" {
 		p.renderResubmitForm(w, r, p.base+"/authorize", params, authorizeFormFields...)
 		return
 	}
@@ -893,7 +894,7 @@ func (p *identityProvider) handleEndSession(w http.ResponseWriter, r *http.Reque
 	}
 
 	sessionID := p.readSession(r)
-	if r.Method == http.MethodPost && !resubmitted && sessionID == "" && confirm == "" {
+	if r.Method == http.MethodPost && !resubmitted && !p.hasSessionCookie(r) && confirm == "" {
 		p.renderResubmitForm(w, r, p.base+"/end-session", params, endSessionFormFields...)
 		return
 	}
@@ -1768,38 +1769,46 @@ func (p *identityProvider) clearPreAuthSession(w http.ResponseWriter) {
 	http.SetCookie(w, cookie)
 }
 
+func (p *identityProvider) hasSessionCookie(r *http.Request) bool {
+	return p.readCookie(r, sessionCookieBaseName) != ""
+}
+
 func (p *identityProvider) readSession(r *http.Request) string {
 	return p.sessionIDFromCookie(p.readCookie(r, sessionCookieBaseName))
 }
 
 func (p *identityProvider) issueSession(w http.ResponseWriter, username string, authenticatedAt time.Time, sessionID string) string {
+	cookie := p.newCookie(sessionCookieBaseName) // #nosec G124
+	cookie.Value = rand.Text()
+	cookieDigest := sha256.Sum256([]byte(cookie.Value))
+
 	if sessionID != "" {
 		p.mu.Lock()
 		currentSession, sessionKnown := p.sessions[sessionID]
 		if sessionKnown && currentSession.username == username && !isSessionExpired(currentSession, authenticatedAt) {
+			currentSession.cookieDigest = cookieDigest
 			currentSession.authenticatedAt = authenticatedAt
 			currentSession.lastSeenAt = authenticatedAt
 			p.sessions[sessionID] = currentSession
 			p.mu.Unlock()
+			http.SetCookie(w, cookie)
 			return sessionID
 		}
 		p.mu.Unlock()
 		p.clearSession(w, sessionID)
 	}
 
-	cookieValue := rand.Text()
-	sessionID = p.sessionIDFromCookie(cookieValue)
+	sessionID = rand.Text()
 	p.mu.Lock()
 	p.sessions[sessionID] = session{
 		username:        username,
+		cookieDigest:    cookieDigest,
 		clientIDs:       map[string]struct{}{},
 		authenticatedAt: authenticatedAt,
 		lastSeenAt:      authenticatedAt,
 	}
 	p.removeExpiredState()
 	p.mu.Unlock()
-	cookie := p.newCookie(sessionCookieBaseName) // #nosec G124
-	cookie.Value = cookieValue
 	http.SetCookie(w, cookie)
 	return sessionID
 }
@@ -1883,7 +1892,14 @@ func (p *identityProvider) sessionIDFromCookie(value string) string {
 		return ""
 	}
 	digest := sha256.Sum256([]byte(value))
-	return base64.RawURLEncoding.EncodeToString(digest[:])
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for sessionID, currentSession := range p.sessions {
+		if currentSession.cookieDigest == digest {
+			return sessionID
+		}
+	}
+	return ""
 }
 
 // -------------------------------------------------------------------------- //
