@@ -362,37 +362,6 @@ func testUserInfoErrorResponse(t *testing.T) {
 	})
 }
 
-func testUserInfoResponseValidation(t *testing.T) {
-	provider := startProvider(t, defaultProviderConfig())
-	request := newDefaultConfidentialAuthorizationRequest("userinfo-response-validation")
-	token := authorizeAndExchange(t, provider, request, tokenRequest{
-		ClientID:     request.ClientID,
-		ClientSecret: webClientSecret,
-		CodeVerifier: request.Verifier,
-	})
-	idTokenClaims := verifyIDToken(t, provider, token.IDToken)
-	resp := provider.getUserInfoResponse(t, token.AccessToken)
-	body := readBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
-	}
-	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
-		t.Fatalf("content type mismatch: got %q", got)
-	}
-	payload := decodeJSONMap(t, body)
-	if payload["sub"] != idTokenClaims.Sub {
-		t.Fatalf("userinfo subject mismatch: got %#v, want %q", payload["sub"], idTokenClaims.Sub)
-	}
-}
-
-func TestOIDCProviderOutputSanity(t *testing.T) {
-	t.Run("authorization response metadata", testAuthenticationResponseValidation)
-	t.Run("token response consistency", testTokenResponseValidation)
-	t.Run("id token signing metadata", testIDTokenValidation)
-	t.Run("access token hash consistency", testAccessTokenValidation)
-	t.Run("userinfo subject consistency", testUserInfoResponseValidation)
-}
-
 func testScopeBasedClaims(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 
@@ -1212,11 +1181,4 @@ func testProfileLogout(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("userinfo status after logout mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
 	}
-}
-
-func TestProfileImplementation(t *testing.T) {
-	t.Run("profile page", testProfilePage)
-	t.Run("profile login", testProfileLogin)
-	t.Run("profile update", testProfileUpdate)
-	t.Run("profile logout", testProfileLogout)
 }

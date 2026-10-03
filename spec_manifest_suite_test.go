@@ -9,6 +9,7 @@ package simpleidp
 // OAuth 2.1 draft 15: https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-15.txt
 // RFC 7662: https://www.rfc-editor.org/rfc/rfc7662.txt
 // RFC 9068: https://www.rfc-editor.org/rfc/rfc9068.txt
+// Simple IdP: README.md
 
 import (
 	"fmt"
@@ -117,6 +118,10 @@ var expectedRFC9068Sections = []string{
 	"8", "8.1", "8.2",
 }
 
+var expectedSimpleIdPSections = []string{
+	"1", "1.1", "1.2", "1.3", "1.4",
+}
+
 type specSection struct {
 	Spec       string
 	Section    string
@@ -168,6 +173,7 @@ func allSpecSections() []specSection {
 	sections = append(sections, rfc7662Sections...)
 	sections = append(sections, rfc7009Sections...)
 	sections = append(sections, rfc9068Sections...)
+	sections = append(sections, simpleIdPSections...)
 	return sections
 }
 
@@ -234,6 +240,7 @@ func TestSpecCoverageManifest(t *testing.T) {
 		"RFC 7662",
 		"RFC 7009",
 		"RFC 9068",
+		"Simple IdP",
 	} {
 		summary := summaries[spec]
 		t.Logf("%s: %d applicable sections, %d documented out-of-scope sections", spec, summary.applicable, summary.documented)
@@ -247,4 +254,5 @@ func TestSpecCoverageManifest(t *testing.T) {
 	assertExactManifestSections(t, "RFC 7662", expectedRFC7662Sections, sectionsBySpec["RFC 7662"])
 	assertExactManifestSections(t, "RFC 7009", expectedRFC7009Sections, sectionsBySpec["RFC 7009"])
 	assertExactManifestSections(t, "RFC 9068", expectedRFC9068Sections, sectionsBySpec["RFC 9068"])
+	assertExactManifestSections(t, "Simple IdP", expectedSimpleIdPSections, sectionsBySpec["Simple IdP"])
 }

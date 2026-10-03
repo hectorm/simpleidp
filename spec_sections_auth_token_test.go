@@ -763,6 +763,7 @@ func testAuthorizationServerObtainsEndUserConsentAuthorization(t *testing.T) {
 func testSuccessfulAuthenticationResponse(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 	request := newDefaultConfidentialAuthorizationRequest("successful-auth-response")
+	request.State = "state with spaces/+?&="
 
 	resp := provider.getAuthorize(t, authorizeParams(request))
 	body := readBody(t, resp)
@@ -775,6 +776,9 @@ func testSuccessfulAuthenticationResponse(t *testing.T) {
 	assertAuthorizationResponseMetadata(t, redirect, request.State, provider.issuer)
 	if got := redirect.Query().Get("code"); got == "" {
 		t.Fatalf("expected code, got %q", redirect.String())
+	}
+	if redirect.Fragment != "" {
+		t.Fatalf("did not expect redirect fragment, got %q", redirect.String())
 	}
 	for _, unexpected := range []string{"access_token", "id_token", "token_type"} {
 		if got := redirect.Query().Get(unexpected); got != "" {
@@ -809,25 +813,6 @@ func testAuthenticationErrorResponse(t *testing.T) {
 			t.Fatalf("did not expect redirect location, got %q", resp.Header.Get("Location"))
 		}
 	})
-}
-
-func testAuthenticationResponseValidation(t *testing.T) {
-	provider := startProvider(t, defaultProviderConfig())
-	request := newDefaultConfidentialAuthorizationRequest("response-validation")
-	request.State = "state with spaces/+?&="
-
-	resp := provider.getAuthorize(t, authorizeParams(request))
-	body := readBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
-	}
-
-	redirect := expectRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther)
-	assertRedirectTarget(t, redirect, request.RedirectURI)
-	assertAuthorizationResponseMetadata(t, redirect, request.State, provider.issuer)
-	if redirect.Fragment != "" {
-		t.Fatalf("did not expect redirect fragment, got %q", redirect.String())
-	}
 }
 
 func testTokenRequest(t *testing.T) {
@@ -1593,29 +1578,10 @@ func testTokenErrorResponse(t *testing.T) {
 	})
 }
 
-func testTokenResponseValidation(t *testing.T) {
-	provider := startProvider(t, defaultProviderConfig())
-	request := newDefaultConfidentialAuthorizationRequest("token-response-validation")
-	token := authorizeAndExchange(t, provider, request, tokenRequest{
-		ClientID:     request.ClientID,
-		ClientSecret: webClientSecret,
-		CodeVerifier: request.Verifier,
-	})
-	claims := verifyIDToken(t, provider, token.IDToken)
-
-	if claims.Iss != provider.issuer {
-		t.Fatalf("issuer mismatch: got %q, want %q", claims.Iss, provider.issuer)
-	}
-	if claims.Aud != request.ClientID {
-		t.Fatalf("audience mismatch: got %q, want %q", claims.Aud, request.ClientID)
-	}
-	if claims.AtHash != "" && claims.AtHash != accessTokenHash(token.AccessToken) {
-		t.Fatalf("at_hash mismatch: got %q, want %q", claims.AtHash, accessTokenHash(token.AccessToken))
-	}
-}
-
 func testIDToken(t *testing.T) {
-	provider := startProvider(t, defaultProviderConfig())
+	config := defaultProviderConfig()
+	config.IssuerPath = "/issuer"
+	provider := startProvider(t, config)
 	request := newDefaultConfidentialAuthorizationRequest("id-token-contents")
 	token := authorizeAndExchange(t, provider, request, tokenRequest{
 		ClientID:     request.ClientID,
@@ -1641,51 +1607,6 @@ func testIDToken(t *testing.T) {
 func testTokenEndpointIDToken(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 	request := newDefaultConfidentialAuthorizationRequest("token-endpoint-id-token")
-	token := authorizeAndExchange(t, provider, request, tokenRequest{
-		ClientID:     request.ClientID,
-		ClientSecret: webClientSecret,
-		CodeVerifier: request.Verifier,
-	})
-	claims := verifyIDToken(t, provider, token.IDToken)
-
-	if claims.AtHash == "" {
-		t.Fatalf("expected at_hash claim, got %#v", claims)
-	}
-	if claims.AtHash != accessTokenHash(token.AccessToken) {
-		t.Fatalf("at_hash mismatch: got %q, want %q", claims.AtHash, accessTokenHash(token.AccessToken))
-	}
-}
-
-func testIDTokenValidation(t *testing.T) {
-	config := defaultProviderConfig()
-	config.IssuerPath = "/issuer"
-	provider := startProvider(t, config)
-	request := newDefaultConfidentialAuthorizationRequest("id-token-validation")
-	token := authorizeAndExchange(t, provider, request, tokenRequest{
-		ClientID:     request.ClientID,
-		ClientSecret: webClientSecret,
-		CodeVerifier: request.Verifier,
-	})
-	header := decodeJWTHeader(t, token.IDToken)
-	claims := verifyIDToken(t, provider, token.IDToken)
-
-	if header.Alg != "RS256" || header.Typ != "JWT" || header.Kid == "" {
-		t.Fatalf("unexpected jwt header: %#v", header)
-	}
-	if claims.Iss != provider.issuer {
-		t.Fatalf("issuer mismatch: got %q, want %q", claims.Iss, provider.issuer)
-	}
-	if claims.Aud != request.ClientID {
-		t.Fatalf("audience mismatch: got %q, want %q", claims.Aud, request.ClientID)
-	}
-	if claims.Exp <= claims.Iat {
-		t.Fatalf("expected exp > iat, got iat=%d exp=%d", claims.Iat, claims.Exp)
-	}
-}
-
-func testAccessTokenValidation(t *testing.T) {
-	provider := startProvider(t, defaultProviderConfig())
-	request := newDefaultConfidentialAuthorizationRequest("access-token-validation")
 	token := authorizeAndExchange(t, provider, request, tokenRequest{
 		ClientID:     request.ClientID,
 		ClientSecret: webClientSecret,

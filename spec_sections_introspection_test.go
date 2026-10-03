@@ -169,6 +169,54 @@ func testIntrospectionResponse(t *testing.T) {
 		}
 	})
 
+	t.Run("includes the implemented members and claims for access tokens", func(t *testing.T) {
+		request := newDefaultConfidentialAuthorizationRequest("introspection-implementation-claims")
+		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+
+		response := introspectToken(t, provider, introspectionRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Token:        token.AccessToken,
+		})
+		if !response.Active {
+			t.Fatalf("expected active token response, got %#v", response)
+		}
+		if response.Scope != request.Scope {
+			t.Fatalf("scope mismatch: got %q, want %q", response.Scope, request.Scope)
+		}
+		if response.ClientID != request.ClientID {
+			t.Fatalf("client_id mismatch: got %q, want %q", response.ClientID, request.ClientID)
+		}
+		if response.TokenType != "Bearer" {
+			t.Fatalf("token_type mismatch: got %q, want %q", response.TokenType, "Bearer")
+		}
+		if response.Exp <= time.Now().Unix() {
+			t.Fatalf("expected exp in the future, got %d", response.Exp)
+		}
+		if response.Iss != provider.issuer {
+			t.Fatalf("issuer mismatch: got %q, want %q", response.Iss, provider.issuer)
+		}
+		if response.Sub != testSubject {
+			t.Fatalf("subject mismatch: got %q, want %q", response.Sub, testSubject)
+		}
+		if response.Name != testName || response.PreferredUsername != testPreferredUsername {
+			t.Fatalf("unexpected profile claims: %#v", response)
+		}
+		if response.Email != testEmail || !response.EmailVerified {
+			t.Fatalf("unexpected email claims: %#v", response)
+		}
+		if response.Profile != testProfile || response.Picture != testPicture || response.Locale != testLocale {
+			t.Fatalf("unexpected profile metadata: %#v", response)
+		}
+		if !slices.Equal(response.Groups, testGroups) {
+			t.Fatalf("groups mismatch: got %#v, want %#v", response.Groups, testGroups)
+		}
+	})
+
 	t.Run("returns an active response for valid refresh tokens", func(t *testing.T) {
 		request := newDefaultConfidentialAuthorizationRequest("introspection-refresh-response")
 		token := authorizeAndExchange(t, provider, request, tokenRequest{
@@ -349,54 +397,5 @@ func expectInactiveIntrospectionResponse(t *testing.T, resp *http.Response) {
 	}
 	if len(payload) != 1 {
 		t.Fatalf("expected only active=false for inactive response, got %#v", payload)
-	}
-}
-
-func TestIntrospectionImplementationClaims(t *testing.T) {
-	provider := startProvider(t, defaultProviderConfig())
-	request := newDefaultConfidentialAuthorizationRequest("introspection-implementation-claims")
-	token := authorizeAndExchange(t, provider, request, tokenRequest{
-		ClientID:     request.ClientID,
-		ClientSecret: webClientSecret,
-		CodeVerifier: request.Verifier,
-	})
-
-	response := introspectToken(t, provider, introspectionRequest{
-		ClientID:     request.ClientID,
-		ClientSecret: webClientSecret,
-		Token:        token.AccessToken,
-	})
-	if !response.Active {
-		t.Fatalf("expected active token response, got %#v", response)
-	}
-	if response.Scope != request.Scope {
-		t.Fatalf("scope mismatch: got %q, want %q", response.Scope, request.Scope)
-	}
-	if response.ClientID != request.ClientID {
-		t.Fatalf("client_id mismatch: got %q, want %q", response.ClientID, request.ClientID)
-	}
-	if response.TokenType != "Bearer" {
-		t.Fatalf("token_type mismatch: got %q, want %q", response.TokenType, "Bearer")
-	}
-	if response.Exp <= time.Now().Unix() {
-		t.Fatalf("expected exp in the future, got %d", response.Exp)
-	}
-	if response.Iss != provider.issuer {
-		t.Fatalf("issuer mismatch: got %q, want %q", response.Iss, provider.issuer)
-	}
-	if response.Sub != testSubject {
-		t.Fatalf("subject mismatch: got %q, want %q", response.Sub, testSubject)
-	}
-	if response.Name != testName || response.PreferredUsername != testPreferredUsername {
-		t.Fatalf("unexpected profile claims: %#v", response)
-	}
-	if response.Email != testEmail || !response.EmailVerified {
-		t.Fatalf("unexpected email claims: %#v", response)
-	}
-	if response.Profile != testProfile || response.Picture != testPicture || response.Locale != testLocale {
-		t.Fatalf("unexpected profile metadata: %#v", response)
-	}
-	if !slices.Equal(response.Groups, testGroups) {
-		t.Fatalf("groups mismatch: got %#v, want %#v", response.Groups, testGroups)
 	}
 }
