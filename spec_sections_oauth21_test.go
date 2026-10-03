@@ -141,17 +141,64 @@ func testOAuth21PreventingMixUpAttacks(t *testing.T) {
 
 func testOAuth21InvalidEndpoint(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
-	request := newDefaultConfidentialAuthorizationRequest("oauth21-invalid-endpoint")
-	request.RedirectURI = "http://127.0.0.1/unregistered/callback"
+	for _, clientID := range []string{webClientID, nativeClientID} {
+		t.Run(clientID, func(t *testing.T) {
+			for _, redirectURI := range []string{
+				"http://127.0.0.1/unregistered/callback",
+				"HTTP://127.0.0.1/callback",
+				"HTTP://127.0.0.1:49204/callback",
+				"https://127.0.0.1/callback",
+				"http://localhost/callback",
+				"http://127.0.0.1/Callback",
+				"http://127.0.0.1/%63allback",
+				"http://127.0.0.1:49204/%63allback",
+				"http://127.0.0.1:49204/callback?tenant=alpha",
+				webClientRedirect + "?tenant=alpha",
+				webClientRedirect + "?",
+				webClientRedirect + "#fragment",
+				webClientRedirect + "#",
+			} {
+				t.Run(redirectURI, func(t *testing.T) {
+					request := newDefaultConfidentialAuthorizationRequest("oauth21-invalid-endpoint")
+					request.ClientID = clientID
+					request.RedirectURI = redirectURI
+					resp := provider.getAuthorize(t, authorizeParams(request))
+					body := readBody(t, resp)
+					if resp.StatusCode != http.StatusBadRequest {
+						t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
+					}
+					if resp.Header.Get("Location") != "" {
+						t.Fatalf("did not expect redirect location, got %q", resp.Header.Get("Location"))
+					}
+				})
+			}
+		})
+	}
 
-	resp := provider.getAuthorize(t, authorizeParams(request))
-	body := readBody(t, resp)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
-	}
-	if resp.Header.Get("Location") != "" {
-		t.Fatalf("did not expect redirect location, got %q", resp.Header.Get("Location"))
-	}
+	t.Run("compares registered query strings without normalization", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Clients[0].RedirectURL = webClientRedirect + "?tenant=alpha&tag=one&tag=two"
+		provider := startProvider(t, config)
+		for _, redirectURI := range []string{
+			webClientRedirect,
+			webClientRedirect + "?tag=one&tag=two&tenant=alpha",
+			webClientRedirect + "?tenant=%61lpha&tag=one&tag=two",
+			webClientRedirect + "?tenant=alpha&tag=two&tag=one",
+		} {
+			t.Run(redirectURI, func(t *testing.T) {
+				request := newDefaultConfidentialAuthorizationRequest("oauth21-invalid-endpoint-query")
+				request.RedirectURI = redirectURI
+				resp := provider.getAuthorize(t, authorizeParams(request))
+				body := readBody(t, resp)
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
+				}
+				if resp.Header.Get("Location") != "" {
+					t.Fatalf("did not expect redirect location, got %q", resp.Header.Get("Location"))
+				}
+			})
+		}
+	})
 }
 
 func testOAuth21AuthorizationEndpoint(t *testing.T) {
@@ -182,6 +229,18 @@ func testOAuth21AuthorizationErrorResponse(t *testing.T) {
 		if got := redirect.Query().Get("error_description"); !strings.Contains(got, "code_challenge") {
 			t.Fatalf("expected code_challenge error, got %q", got)
 		}
+	})
+
+	t.Run("preserves registered query parameters in error redirects", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Clients[0].RedirectURL = webClientRedirect + "?tenant=alpha&tag=one&tag=two"
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("oauth21-auth-error-query")
+		request.RedirectURI = config.Clients[0].RedirectURL
+		params := authorizeParams(request)
+		params.Del("code_challenge")
+
+		expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "invalid_request")
 	})
 
 	t.Run("does not redirect invalid redirect uris", func(t *testing.T) {
@@ -1021,16 +1080,34 @@ func testOAuth21LoopbackInterfaceRedirection(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 
 	t.Run("allows any loopback port for public native clients", func(t *testing.T) {
-		request := authorizationRequest{
-			ClientID:    nativeClientID,
-			RedirectURI: "http://127.0.0.1:49204/callback",
-			Scope:       "openid profile",
-			State:       "oauth21-loopback-public",
-			Verifier:    pkceVerifier("oauth21-loopback-public"),
-		}
-		authorization := authorizeAndLogin(t, provider, request)
-		if authorization.Code == "" {
-			t.Fatalf("expected authorization code, got %#v", authorization)
+		for _, redirect := range []struct {
+			registered string
+			requested  string
+		}{
+			{nativeClientRedirect, "http://127.0.0.1:49204/callback"},
+			{"http://127.0.0.1:49200/callback", "http://127.0.0.1:49204/callback"},
+			{"http://[::1]:49200/callback", "http://[::1]:49204/callback"},
+			{"HTTP://127.0.0.1/callback?tenant=alpha", "HTTP://127.0.0.1:49204/callback?tenant=alpha"},
+		} {
+			t.Run(redirect.registered, func(t *testing.T) {
+				config := defaultProviderConfig()
+				config.Clients[2].RedirectURL = redirect.registered
+				provider := startProvider(t, config)
+				request := authorizationRequest{
+					ClientID:    nativeClientID,
+					RedirectURI: redirect.requested,
+					Scope:       "openid profile",
+					State:       "oauth21-loopback-public",
+					Verifier:    pkceVerifier("oauth21-loopback-public"),
+				}
+				token := authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
+					CodeVerifier: request.Verifier,
+				})
+				if token.AccessToken == "" {
+					t.Fatalf("expected access token, got %#v", token)
+				}
+			})
 		}
 	})
 
@@ -1124,29 +1201,64 @@ func testOAuth21RedirectURIParameterInTokenRequest(t *testing.T) {
 			CodeVerifier: request.Verifier,
 		})
 	})
+
+	t.Run("compares redirect_uri without normalizing its scheme", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Clients[0].RedirectURL = "HTTP://127.0.0.1/callback"
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("oauth21-redirect-uri-token-scheme")
+		request.RedirectURI = config.Clients[0].RedirectURL
+		authorization := authorizeAndLogin(t, provider, request)
+		errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         authorization.Code,
+			RedirectURI:  webClientRedirect,
+			CodeVerifier: request.Verifier,
+		}), http.StatusBadRequest)
+		if errResp.Error != "invalid_grant" {
+			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_grant")
+		}
+		_ = exchangeAuthorizationCode(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         authorization.Code,
+			RedirectURI:  request.RedirectURI,
+			CodeVerifier: request.Verifier,
+		})
+	})
 }
 
 func testOAuth21MultipleRedirectURIs(t *testing.T) {
 	const secondRedirect = "http://localhost/alt/callback"
+	redirectURIs := []string{
+		webClientRedirect,
+		secondRedirect,
+		webClientRedirect + "?tenant=alpha&tag=one&tag=two",
+		"HTTP://127.0.0.1/callback",
+		"http://127.0.0.1/%63allback",
+	}
 
 	config := defaultProviderConfig()
 	for i, c := range config.Clients {
 		if c.ID == webClientID {
-			config.Clients[i].RedirectURL = webClientRedirect + " " + secondRedirect
+			config.Clients[i].RedirectURL = strings.Join(redirectURIs, " ")
 		}
 	}
 	provider := startProvider(t, config)
 
-	for _, redirectURI := range []string{webClientRedirect, secondRedirect} {
-		request := newDefaultConfidentialAuthorizationRequest("oauth21-multiple-redirect-uris")
-		request.RedirectURI = redirectURI
-		token := authorizeAndExchange(t, provider, request, tokenRequest{
-			ClientID:     request.ClientID,
-			ClientSecret: webClientSecret,
-			CodeVerifier: request.Verifier,
+	for _, redirectURI := range redirectURIs {
+		t.Run(redirectURI, func(t *testing.T) {
+			request := newDefaultConfidentialAuthorizationRequest("oauth21-multiple-redirect-uris")
+			request.RedirectURI = redirectURI
+			token := authorizeAndExchange(t, provider, request, tokenRequest{
+				ClientID:     request.ClientID,
+				ClientSecret: webClientSecret,
+				CodeVerifier: request.Verifier,
+			})
+			if token.AccessToken == "" {
+				t.Fatalf("expected access token for redirect uri %q, got %#v", redirectURI, token)
+			}
 		})
-		if token.AccessToken == "" {
-			t.Fatalf("expected access token for redirect uri %q, got %#v", redirectURI, token)
-		}
 	}
 }

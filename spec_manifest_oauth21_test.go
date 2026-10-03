@@ -25,7 +25,7 @@ var oauth21Sections = []specSection{
 	{Spec: "OAuth 2.1", Section: "2", Title: "Client Registration", Notes: "Covered by the applicable subsections below."},
 	{Spec: "OAuth 2.1", Section: "2.1", Title: "Client Types", Applicable: true, Run: testOAuth21ClientTypes},
 	{Spec: "OAuth 2.1", Section: "2.2", Title: "Client Identifier", Applicable: true, Run: testOAuth21ClientIdentifier},
-	{Spec: "OAuth 2.1", Section: "2.3", Title: "Client Redirection Endpoint", Notes: "Covered by the applicable subsections below; configured redirect URIs must be absolute without fragments, and their query is retained."},
+	{Spec: "OAuth 2.1", Section: "2.3", Title: "Client Redirection Endpoint", Notes: "Covered by the applicable subsections below; configured redirect URIs must be absolute without fragments. Registered query parameters are retained in success and error responses, as covered by sections 2.3.2 and 4.1.2.1."},
 	{Spec: "OAuth 2.1", Section: "2.3.1", Title: "Registration Requirements", Notes: "Redirect URIs are validated at startup; exact matching and loopback port variation are covered by sections 2.3.5 and 8.4.2."},
 	{Spec: "OAuth 2.1", Section: "2.3.2", Title: "Multiple Redirect URIs", Applicable: true, Notes: "The redirect_uri parameter is required even with a single registered URI, because OIDC Core 1.0 section 3.1.2.1 requires it; loopback port variation is covered by section 8.4.2.", Run: testOAuth21MultipleRedirectURIs},
 	{Spec: "OAuth 2.1", Section: "2.3.3", Title: "Preventing CSRF Attacks", Applicable: true, Notes: "Choosing among state, nonce, and PKCE is client behavior; the product round-trips state and requires PKCE.", Run: testOAuth21PreventingCSRFAttacks},

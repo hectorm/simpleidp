@@ -323,12 +323,32 @@ func testLogoutDiscoveryMetadata(t *testing.T) {
 }
 
 func testLogoutRedirection(t *testing.T) {
-	fixture := prepareRPInitiatedLogout(t)
-	redirect := expectRedirect(t, submitConsentForm(t, fixture.provider, fixture.formBody, "yes"), http.StatusSeeOther)
-
-	assertRedirectTarget(t, redirect, webClientPostLogoutRedirect)
-	if got := redirect.Query().Get("state"); got != "logout-state" {
-		t.Fatalf("state mismatch: got %q, want %q", got, "logout-state")
+	for _, redirectURI := range []string{
+		webClientPostLogoutRedirect,
+		webClientPostLogoutRedirect + "?tenant=alpha&tag=one&tag=two",
+		"HTTP://127.0.0.1/logout/callback",
+	} {
+		t.Run(redirectURI, func(t *testing.T) {
+			config := defaultProviderConfig()
+			config.Clients[0].PostLogoutRedirectURL = redirectURI
+			provider := startProvider(t, config)
+			request := newDefaultConfidentialAuthorizationRequest("logout-redirection")
+			token := authorizeAndExchange(t, provider, request, tokenRequest{
+				ClientID:     request.ClientID,
+				ClientSecret: webClientSecret,
+				CodeVerifier: request.Verifier,
+			})
+			body := fetchLogoutForm(t, provider, url.Values{
+				"id_token_hint":            {token.IDToken},
+				"post_logout_redirect_uri": {redirectURI},
+				"state":                    {"logout-state"},
+			})
+			redirect := expectRedirect(t, submitConsentForm(t, provider, body, "yes"), http.StatusSeeOther)
+			assertRedirectTarget(t, redirect, redirectURI)
+			if got := redirect.Query().Get("state"); got != "logout-state" {
+				t.Fatalf("state mismatch: got %q, want %q", got, "logout-state")
+			}
+		})
 	}
 }
 
@@ -390,6 +410,44 @@ func testLogoutValidationAndErrorHandling(t *testing.T) {
 		resp := provider.do(t, provider.redirectless, req)
 		body := readBody(t, resp)
 		expectNoLogoutRedirect(t, resp, body)
+	})
+
+	t.Run("rejects access and logout tokens as id token hints", func(t *testing.T) {
+		request := newDefaultConfidentialAuthorizationRequest("logout-token-types-source")
+		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+		_ = verifyAccessToken(t, provider, token.AccessToken)
+		claims := verifyIDToken(t, provider, token.IDToken)
+		user, ok := provider.idp.lookupUser("ALICE")
+		if !ok {
+			t.Fatal("expected configured user")
+		}
+		logoutToken, err := provider.idp.mintLogoutToken(user, provider.idp.clients[webClientID], claims.Sid)
+		if err != nil {
+			t.Fatalf("failed to mint logout token: %v", err)
+		}
+		_ = verifyLogoutToken(t, provider, logoutToken)
+
+		for tokenType, hint := range map[string]string{"access token": token.AccessToken, "logout token": logoutToken} {
+			t.Run(tokenType, func(t *testing.T) {
+				req, err := http.NewRequest(http.MethodGet, provider.endpoint("/end-session")+"?"+url.Values{
+					"id_token_hint":            {hint},
+					"post_logout_redirect_uri": {webClientPostLogoutRedirect},
+				}.Encode(), nil)
+				if err != nil {
+					t.Fatalf("failed to create logout request: %v", err)
+				}
+				resp := provider.do(t, provider.redirectless, req)
+				body := readBody(t, resp)
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Fatalf("logout status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
+				}
+				expectNoLogoutRedirect(t, resp, body)
+			})
+		}
 	})
 
 	t.Run("rejects mismatched client identifiers", func(t *testing.T) {

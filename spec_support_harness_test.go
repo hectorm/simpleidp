@@ -29,6 +29,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1005,8 +1006,20 @@ func expectAuthorizationErrorRedirect(t *testing.T, resp *http.Response, status 
 func assertRedirectTarget(t *testing.T, redirect *url.URL, redirectURI string) {
 	t.Helper()
 
-	if got := redirectBase(redirect); got != redirectURI {
-		t.Fatalf("redirect destination mismatch: got %q, want %q", got, redirectURI)
+	expected, err := url.Parse(redirectURI)
+	if err != nil {
+		t.Fatalf("failed to parse redirect uri: %v", err)
+	}
+	if got, want := redirectBase(redirect), redirectBase(expected); got != want {
+		t.Fatalf("redirect destination mismatch: got %q, want %q", got, want)
+	}
+	if redirect.Fragment != expected.Fragment {
+		t.Fatalf("redirect fragment mismatch: got %q, want %q", redirect.Fragment, expected.Fragment)
+	}
+	for key, want := range expected.Query() {
+		if got := redirect.Query()[key]; !slices.Equal(got, want) {
+			t.Fatalf("redirect query parameter %q mismatch: got %#v, want %#v", key, got, want)
+		}
 	}
 }
 

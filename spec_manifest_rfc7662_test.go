@@ -18,7 +18,7 @@ var rfc7662Sections = []specSection{
 	{Spec: "RFC 7662", Section: "3.1.1", Title: "Registration Template", Notes: "IANA registration text is not a test target."},
 	{Spec: "RFC 7662", Section: "3.1.2", Title: "Initial Registry Contents", Notes: "IANA registration text is not a test target."},
 	{Spec: "RFC 7662", Section: "4", Title: "Security Considerations", Applicable: true, Notes: "Introspection checks the client a token was issued to, not its audience, and TLS is out of scope.", Run: testIntrospectionSecurityConsiderations},
-	{Spec: "RFC 7662", Section: "5", Title: "Privacy Considerations", Applicable: true, Notes: "Only the confidential client a token was issued to can introspect it, and active responses include the claims of the granted scopes.", Run: testIntrospectionPrivacyConsiderations},
+	{Spec: "RFC 7662", Section: "5", Title: "Privacy Considerations", Applicable: true, Notes: "Only the confidential client a token was issued to can introspect it. As provider policy, active responses limit optional claims to that token's scopes; after a narrowed refresh, access tokens use the reduced scopes and refresh tokens retain the original grant scopes.", Run: testIntrospectionPrivacyConsiderations},
 	{Spec: "RFC 7662", Section: "6", Title: "References", Notes: "Reference sections are not test targets."},
 	{Spec: "RFC 7662", Section: "6.1", Title: "Normative References", Notes: "Reference sections are not test targets."},
 	{Spec: "RFC 7662", Section: "6.2", Title: "Informative References", Notes: "Reference sections are not test targets."},

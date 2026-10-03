@@ -113,8 +113,8 @@ type client struct {
 	secret                           string
 	isPublic                         bool
 	audience                         string
-	redirectURLs                     []url.URL
-	postLogoutRedirectURLs           []url.URL
+	redirectURLs                     []string
+	postLogoutRedirectURLs           []string
 	backchannelLogoutURI             url.URL
 	backchannelLogoutSessionRequired bool
 }
@@ -167,7 +167,7 @@ type refreshToken struct {
 type pendingCode struct {
 	clientID        string
 	userLabel       string
-	redirectURI     url.URL
+	redirectURI     string
 	codeChallenge   string
 	nonce           string
 	state           string
@@ -530,7 +530,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 	client, ok := p.clients[clientID]
 	redirectURI, err := url.Parse(params.Get("redirect_uri"))
 
-	if !ok || err != nil || !isAllowedRedirectURL(client.redirectURLs, *redirectURI, client.isPublic) {
+	if !ok || err != nil || !isAllowedRedirectURL(client.redirectURLs, params.Get("redirect_uri"), client.isPublic) {
 		http.Error(w, "Unknown client or redirect URI", http.StatusBadRequest)
 		return
 	}
@@ -568,7 +568,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		if !sessionKnown || p.isSessionExpired(currentSession, now) || pendingCode.sessionID != sessionID {
 			codeKnown = false
 		}
-		if codeKnown && (pendingCode.clientID != client.id || pendingCode.redirectURI != *redirectURI || !pendingCode.consumedAt.IsZero() || !pendingCode.consentRequired) {
+		if codeKnown && (pendingCode.clientID != client.id || pendingCode.redirectURI != params.Get("redirect_uri") || !pendingCode.consumedAt.IsZero() || !pendingCode.consentRequired) {
 			codeKnown = false
 		}
 		if codeKnown {
@@ -1478,7 +1478,7 @@ func (p *identityProvider) renderLogoutCanceled(w http.ResponseWriter, r *http.R
 	if clientID != "" {
 		if client, ok := p.clients[clientID]; ok {
 			if len(client.postLogoutRedirectURLs) > 0 {
-				returnURL := client.postLogoutRedirectURLs[0].String()
+				returnURL := client.postLogoutRedirectURLs[0]
 				links = append(links, formPageLink{Href: returnURL, Label: "Return to application", TestID: "return-link"})
 			}
 		}
@@ -1510,7 +1510,7 @@ func (p *identityProvider) renderLogoutComplete(w http.ResponseWriter, r *http.R
 	if clientID != "" {
 		if client, ok := p.clients[clientID]; ok {
 			if len(client.postLogoutRedirectURLs) > 0 {
-				returnURL := client.postLogoutRedirectURLs[0].String()
+				returnURL := client.postLogoutRedirectURLs[0]
 				links = append(links, formPageLink{Href: returnURL, Label: "Return to application", TestID: "return-link"})
 			}
 		}
@@ -1599,7 +1599,7 @@ func (p *identityProvider) authorizeUser(w http.ResponseWriter, r *http.Request,
 	p.pendingCodes[issuedCode] = pendingCode{
 		clientID:        authorization.client.id,
 		userLabel:       userLabel,
-		redirectURI:     authorization.redirectURI,
+		redirectURI:     authorization.params.Get("redirect_uri"),
 		codeChallenge:   authorization.codeChallenge,
 		nonce:           authorization.nonce,
 		state:           authorization.state,
@@ -1648,13 +1648,13 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 		return
 	}
 
-	if redirectURI != "" && redirectURI != pendingCode.redirectURI.String() {
+	if redirectURI != "" && redirectURI != pendingCode.redirectURI {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "Redirect URI does not match the one used in the authorization request")
 		return
 	}
 
 	if codeVerifier == "" {
-		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "Missing required parameter: code_verifier")
+		writeTokenError(w, http.StatusBadRequest, "invalid_request", "Missing required parameter: code_verifier")
 		return
 	}
 	if !isValidPKCEValue(codeVerifier) {
@@ -2642,29 +2642,34 @@ func isLoopbackURL(u *url.URL) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func isAllowedRedirectURL(redirectURLs []url.URL, redirectURI url.URL, allowLoopbackPort bool) bool {
-	for _, redirectURL := range redirectURLs {
-		if redirectURL.Host != redirectURI.Host &&
-			!(allowLoopbackPort && isLoopbackURL(&redirectURL) && isLoopbackURL(&redirectURI) &&
-				redirectURL.Hostname() == redirectURI.Hostname()) {
+func isAllowedRedirectURL(redirectURLs []string, rawRedirectURI string, allowLoopbackPort bool) bool {
+	redirectURI, err := url.Parse(rawRedirectURI)
+	for _, rawRedirectURL := range redirectURLs {
+		if rawRedirectURL == rawRedirectURI {
+			return true
+		}
+		if !allowLoopbackPort || err != nil {
 			continue
 		}
-		if redirectURL.Scheme == redirectURI.Scheme &&
-			redirectURL.User == nil && redirectURI.User == nil &&
-			redirectURL.EscapedPath() == redirectURI.EscapedPath() &&
-			redirectURL.ForceQuery == redirectURI.ForceQuery &&
-			redirectURL.RawQuery == redirectURI.RawQuery &&
-			redirectURL.Fragment == redirectURI.Fragment {
+		redirectURL, err := url.Parse(rawRedirectURL)
+		if err != nil || !isLoopbackURL(redirectURL) || !isLoopbackURL(redirectURI) ||
+			redirectURI.User != nil || redirectURL.Hostname() != redirectURI.Hostname() {
+			continue
+		}
+		if strings.Replace(rawRedirectURL, "://"+redirectURL.Host, "://"+redirectURI.Host, 1) == rawRedirectURI {
 			return true
 		}
 	}
 	return false
 }
 
-func resolvePostLogoutRedirectURL(postLogoutRedirectURLs []url.URL, postLogoutRedirectURI string) (url.URL, bool) {
-	for _, postLogoutRedirectURL := range postLogoutRedirectURLs {
-		if postLogoutRedirectURL.String() == postLogoutRedirectURI {
-			return postLogoutRedirectURL, true
+func resolvePostLogoutRedirectURL(postLogoutRedirectURLs []string, postLogoutRedirectURI string) (url.URL, bool) {
+	for _, rawPostLogoutRedirectURL := range postLogoutRedirectURLs {
+		if rawPostLogoutRedirectURL == postLogoutRedirectURI {
+			postLogoutRedirectURL, err := url.Parse(rawPostLogoutRedirectURL)
+			if err == nil {
+				return *postLogoutRedirectURL, true
+			}
 		}
 	}
 	return url.URL{}, false
@@ -2696,14 +2701,14 @@ func validateIssuerURL(rawURL string) (*url.URL, error) {
 	return u, nil
 }
 
-func validateRedirectURLs(rawURLs string) ([]url.URL, error) {
-	var redirectURLs []url.URL
+func validateRedirectURLs(rawURLs string) ([]string, error) {
+	var redirectURLs []string
 	for rawURL := range strings.FieldsSeq(rawURLs) {
-		parsed, err := validateRedirectURL(rawURL)
+		_, err := validateRedirectURL(rawURL)
 		if err != nil {
 			return nil, err
 		}
-		redirectURLs = append(redirectURLs, *parsed)
+		redirectURLs = append(redirectURLs, rawURL)
 	}
 	if len(redirectURLs) == 0 {
 		return nil, errors.New("must include at least one URL")
@@ -2728,7 +2733,7 @@ func validateRedirectURL(rawURL string) (*url.URL, error) {
 	if u.User != nil {
 		return nil, fmt.Errorf("must not include user info: %q", rawURL)
 	}
-	if u.Fragment != "" {
+	if strings.Contains(rawURL, "#") {
 		return nil, fmt.Errorf("must not contain a fragment: %q", rawURL)
 	}
 	return u, nil
@@ -2816,7 +2821,7 @@ func loadClients(environ []string, lookupEnv func(string) string) (map[string]cl
 		if _, dup := clients[id]; dup {
 			return nil, fmt.Errorf("duplicate client ID %q", id)
 		}
-		var redirectURLs []url.URL
+		var redirectURLs []string
 		var err error
 		if rawRedirectURL != "" {
 			redirectURLs, err = validateRedirectURLs(rawRedirectURL)
@@ -2826,13 +2831,14 @@ func loadClients(environ []string, lookupEnv func(string) string) (map[string]cl
 		}
 		isPublic := secret == ""
 		if isPublic {
-			for i := range redirectURLs {
-				if !isLoopbackURL(&redirectURLs[i]) {
+			for _, rawURL := range redirectURLs {
+				redirectURL, _ := url.Parse(rawURL)
+				if !isLoopbackURL(redirectURL) {
 					return nil, fmt.Errorf("client %q: public clients (no secret) must use loopback redirect URLs", label)
 				}
 			}
 		}
-		var postLogoutRedirectURLs []url.URL
+		var postLogoutRedirectURLs []string
 		if raw := lookupEnv(prefix + label + "_POST_LOGOUT_REDIRECT_URL"); raw != "" {
 			postLogoutRedirectURLs, err = validateRedirectURLs(raw)
 			if err != nil {
@@ -2841,9 +2847,9 @@ func loadClients(environ []string, lookupEnv func(string) string) (map[string]cl
 		}
 		var backchannelLogoutURI url.URL
 		if raw := lookupEnv(prefix + label + "_BACKCHANNEL_LOGOUT_URI"); raw != "" {
-			parsed, err := url.Parse(raw)
-			if err != nil || !parsed.IsAbs() || (parsed.Scheme != "https" && parsed.Scheme != "http") {
-				return nil, fmt.Errorf("client %q backchannel logout URI: must be an absolute http or https URL", label)
+			parsed, err := validateRedirectURL(raw)
+			if err != nil {
+				return nil, fmt.Errorf("client %q backchannel logout URI: %w", label, err)
 			}
 			backchannelLogoutURI = *parsed
 		}

@@ -11,7 +11,7 @@ var rfc9068Sections = []specSection{
 	{Spec: "RFC 9068", Section: "1.2", Title: "Terminology", Notes: "Terminology definitions are not test targets."},
 	{Spec: "RFC 9068", Section: "2", Title: "JWT Access Token Header and Data Structure", Notes: "Covered by the applicable subsections below."},
 	{Spec: "RFC 9068", Section: "2.1", Title: "Header", Applicable: true, Run: testJWTAccessTokenHeader},
-	{Spec: "RFC 9068", Section: "2.2", Title: "Data Structure", Applicable: true, Notes: "The sub, client_id, and aud claims of client credentials tokens are covered by OAuth 2.1 section 4.2.", Run: testJWTAccessTokenDataStructure},
+	{Spec: "RFC 9068", Section: "2.2", Title: "Data Structure", Applicable: true, Notes: "Required claims are covered for authorization code, refresh, and client credentials tokens; client credentials subject and audience handling is also covered by OAuth 2.1 section 4.2.", Run: testJWTAccessTokenDataStructure},
 	{Spec: "RFC 9068", Section: "2.2.1", Title: "Authentication Information Claims", Notes: "The optional auth_time, acr, and amr claims are not included in access tokens."},
 	{Spec: "RFC 9068", Section: "2.2.2", Title: "Identity Claims", Applicable: true, Run: testJWTAccessTokenIdentityClaims},
 	{Spec: "RFC 9068", Section: "2.2.3", Title: "Authorization Claims", Applicable: true, Run: testJWTAccessTokenAuthorizationClaims},

@@ -161,6 +161,7 @@ type introspectionResponse struct {
 	Picture           string   `json:"picture"`
 	Locale            string   `json:"locale"`
 	Groups            []string `json:"groups"`
+	Roles             []string `json:"roles"`
 }
 
 type oauthErrorResponse struct {

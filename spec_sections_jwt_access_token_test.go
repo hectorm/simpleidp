@@ -27,19 +27,47 @@ func testJWTAccessTokenHeader(t *testing.T) {
 
 func testJWTAccessTokenDataStructure(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
-	request := newDefaultConfidentialAuthorizationRequest("jwt-access-token-data-structure")
-	token := authorizeAndExchange(t, provider, request, tokenRequest{
-		ClientID:     request.ClientID,
-		ClientSecret: webClientSecret,
-		CodeVerifier: request.Verifier,
-	})
+	for _, grantType := range []string{"authorization_code", "refresh_token", "client_credentials"} {
+		t.Run(grantType, func(t *testing.T) {
+			issuedAfter := time.Now().Unix()
+			var token tokenResponse
+			subject := testSubject
+			if grantType == "client_credentials" {
+				subject = webClientID
+				token = exchangeClientCredentials(t, provider, tokenRequest{
+					ClientID:     webClientID,
+					ClientSecret: webClientSecret,
+					Scope:        "orders:read",
+				})
+			} else {
+				request := newDefaultConfidentialAuthorizationRequest("jwt-access-token-data-structure-" + grantType)
+				token = authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					CodeVerifier: request.Verifier,
+				})
+				if grantType == "refresh_token" {
+					issuedAfter = time.Now().Unix()
+					token = exchangeRefreshToken(t, provider, tokenRequest{
+						ClientID:     webClientID,
+						ClientSecret: webClientSecret,
+						RefreshToken: token.RefreshToken,
+					})
+				}
+			}
 
-	claims := verifyAccessToken(t, provider, token.AccessToken)
-	if claims.Iss != provider.issuer || claims.Sub != testSubject || claims.Aud == "" || claims.ClientID != request.ClientID {
-		t.Fatalf("unexpected access token claims: %#v", claims)
-	}
-	if claims.Jti == "" || claims.Iat <= 0 || claims.Iat > time.Now().Unix() || claims.Exp <= time.Now().Unix() || claims.Exp-claims.Iat != int64(token.ExpiresIn) {
-		t.Fatalf("unexpected access token metadata: %#v", claims)
+			if header := decodeJWTHeader(t, token.AccessToken); header.Alg != "RS256" || header.Typ != "at+jwt" || header.Kid == "" {
+				t.Fatalf("unexpected access token header: %#v", header)
+			}
+			claims := verifyAccessToken(t, provider, token.AccessToken)
+			if claims.Iss != provider.issuer || claims.Sub != subject || claims.Aud != webClientID || claims.ClientID != webClientID {
+				t.Fatalf("unexpected access token claims: %#v", claims)
+			}
+			now := time.Now().Unix()
+			if claims.Jti == "" || claims.Iat < issuedAfter || claims.Iat > now || claims.Exp <= now || claims.Exp-claims.Iat != int64(token.ExpiresIn) {
+				t.Fatalf("unexpected access token metadata: %#v", claims)
+			}
+		})
 	}
 }
 

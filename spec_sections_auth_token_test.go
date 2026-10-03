@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testAuthorizationCodeFlowSteps(t *testing.T) {
@@ -225,6 +226,39 @@ func testAuthenticationRequestValidation(t *testing.T) {
 		redirect := expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "invalid_request")
 		if got := redirect.Query().Get("error_description"); !strings.Contains(got, "id_token_hint") {
 			t.Fatalf("expected id_token_hint error, got %q", got)
+		}
+	})
+
+	t.Run("rejects access and logout tokens as id token hints", func(t *testing.T) {
+		request := newDefaultConfidentialAuthorizationRequest("id-token-hint-token-types-source")
+		source := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+		_ = verifyAccessToken(t, provider, source.AccessToken)
+		claims := verifyIDToken(t, provider, source.IDToken)
+		user, ok := provider.idp.lookupUser("ALICE")
+		if !ok {
+			t.Fatal("expected configured user")
+		}
+		logoutToken, err := provider.idp.mintLogoutToken(user, provider.idp.clients[webClientID], claims.Sid)
+		if err != nil {
+			t.Fatalf("failed to mint logout token: %v", err)
+		}
+		_ = verifyLogoutToken(t, provider, logoutToken)
+
+		for tokenType, hint := range map[string]string{"access token": source.AccessToken, "logout token": logoutToken} {
+			t.Run(tokenType, func(t *testing.T) {
+				request := newDefaultConfidentialAuthorizationRequest("id-token-hint-token-types")
+				request.Prompt = "none"
+				params := authorizeParams(request)
+				params.Set("id_token_hint", hint)
+				redirect := expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "invalid_request")
+				if got := redirect.Query().Get("error_description"); !strings.Contains(got, "id_token_hint") {
+					t.Fatalf("expected id_token_hint error, got %q", got)
+				}
+			})
 		}
 	})
 
@@ -865,7 +899,7 @@ func testTokenRequest(t *testing.T) {
 func testTokenRequestValidation(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 
-	t.Run("requires a matching code verifier", func(t *testing.T) {
+	t.Run("returns invalid_request when the code verifier is missing", func(t *testing.T) {
 		request := newDefaultConfidentialAuthorizationRequest("missing-code-verifier")
 		authorization := authorizeAndLogin(t, provider, request)
 
@@ -875,9 +909,16 @@ func testTokenRequestValidation(t *testing.T) {
 			Code:         authorization.Code,
 			RedirectURI:  request.RedirectURI,
 		}), http.StatusBadRequest)
-		if errResp.Error != "invalid_grant" {
-			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_grant")
+		if errResp.Error != "invalid_request" {
+			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_request")
 		}
+		_ = exchangeAuthorizationCode(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         authorization.Code,
+			RedirectURI:  request.RedirectURI,
+			CodeVerifier: request.Verifier,
+		})
 	})
 
 	t.Run("rejects mismatched code verifiers", func(t *testing.T) {
@@ -1220,6 +1261,7 @@ func testSuccessfulRefreshResponse(t *testing.T) {
 	})
 	originalClaims := verifyIDToken(t, provider, token.IDToken)
 
+	issuedAfter := time.Now().Unix()
 	refreshed := exchangeRefreshToken(t, provider, tokenRequest{
 		ClientID:     request.ClientID,
 		ClientSecret: webClientSecret,
@@ -1251,8 +1293,9 @@ func testSuccessfulRefreshResponse(t *testing.T) {
 	if refreshedClaims.AuthTime != originalClaims.AuthTime {
 		t.Fatalf("auth_time mismatch: got %d, want %d", refreshedClaims.AuthTime, originalClaims.AuthTime)
 	}
-	if refreshedClaims.Iat < originalClaims.Iat {
-		t.Fatalf("expected refreshed iat >= %d, got %d", originalClaims.Iat, refreshedClaims.Iat)
+	now := time.Now().Unix()
+	if refreshedClaims.Iat < issuedAfter || refreshedClaims.Iat > now || refreshedClaims.Exp <= now || refreshedClaims.Exp-refreshedClaims.Iat != int64(refreshed.ExpiresIn) {
+		t.Fatalf("unexpected refreshed id token metadata: %#v", refreshedClaims)
 	}
 	if refreshedClaims.Nonce != "" {
 		t.Fatalf("expected refreshed id token nonce to be omitted, got %q", refreshedClaims.Nonce)
@@ -1583,6 +1626,7 @@ func testIDToken(t *testing.T) {
 	config.IssuerPath = "/issuer"
 	provider := startProvider(t, config)
 	request := newDefaultConfidentialAuthorizationRequest("id-token-contents")
+	issuedAfter := time.Now().Unix()
 	token := authorizeAndExchange(t, provider, request, tokenRequest{
 		ClientID:     request.ClientID,
 		ClientSecret: webClientSecret,
@@ -1599,8 +1643,9 @@ func testIDToken(t *testing.T) {
 	if claims.AuthTime == 0 {
 		t.Fatalf("expected auth_time claim, got %#v", claims)
 	}
-	if claims.Iat == 0 || claims.Exp <= claims.Iat {
-		t.Fatalf("invalid iat/exp claims: %#v", claims)
+	now := time.Now().Unix()
+	if claims.Iat < issuedAfter || claims.Iat > now || claims.Exp <= now || claims.Exp-claims.Iat != int64(token.ExpiresIn) {
+		t.Fatalf("unexpected id token metadata: %#v", claims)
 	}
 }
 

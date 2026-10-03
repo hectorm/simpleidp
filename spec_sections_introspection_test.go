@@ -4,6 +4,7 @@ package simpleidp
 // RFC 7662: https://www.rfc-editor.org/rfc/rfc7662.txt
 
 import (
+	"encoding/json/v2"
 	"net/http"
 	"net/url"
 	"slices"
@@ -356,7 +357,67 @@ func testIntrospectionSecurityConsiderations(t *testing.T) {
 }
 
 func testIntrospectionPrivacyConsiderations(t *testing.T) {
-	provider := startProvider(t, defaultProviderConfig())
+	config := defaultProviderConfig()
+	roles := []string{"reader", "operator"}
+	config.Users[0].Roles = roles
+	provider := startProvider(t, config)
+
+	t.Run("limits active responses to the token's granted scopes", func(t *testing.T) {
+		for _, scope := range []string{"openid", "openid profile", "openid email", "openid groups", "openid roles", "openid profile email groups roles"} {
+			t.Run(scope, func(t *testing.T) {
+				request := newDefaultConfidentialAuthorizationRequest("introspection-privacy-scope-" + scope)
+				request.Scope = scope
+				token := authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					CodeVerifier: request.Verifier,
+				})
+				for tokenType, rawToken := range map[string]string{"access token": token.AccessToken, "refresh token": token.RefreshToken} {
+					t.Run(tokenType, func(t *testing.T) {
+						resp := provider.postIntrospect(t, introspectionRequest{
+							ClientID:     request.ClientID,
+							ClientSecret: webClientSecret,
+							Token:        rawToken,
+						})
+						expectScopedIntrospectionResponse(t, resp, scope, roles)
+					})
+				}
+			})
+		}
+	})
+
+	t.Run("uses the reduced access scope and original refresh scope after refresh", func(t *testing.T) {
+		request := newDefaultConfidentialAuthorizationRequest("introspection-privacy-refresh-scope")
+		request.Scope = "openid profile email groups roles"
+		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+		refreshed := exchangeRefreshToken(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			RefreshToken: token.RefreshToken,
+			Scope:        "openid",
+		})
+		for _, token := range []struct {
+			name  string
+			value string
+			scope string
+		}{
+			{"access token", refreshed.AccessToken, "openid"},
+			{"refresh token", refreshed.RefreshToken, request.Scope},
+		} {
+			t.Run(token.name, func(t *testing.T) {
+				resp := provider.postIntrospect(t, introspectionRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					Token:        token.value,
+				})
+				expectScopedIntrospectionResponse(t, resp, token.scope, roles)
+			})
+		}
+	})
 
 	t.Run("does not disclose claims to protected resources that are not allowed to introspect the token", func(t *testing.T) {
 		request := newDefaultConfidentialAuthorizationRequest("introspection-privacy-other-client")
@@ -382,6 +443,52 @@ func testIntrospectionPrivacyConsiderations(t *testing.T) {
 		})
 		expectInactiveIntrospectionResponse(t, resp)
 	})
+}
+
+func expectScopedIntrospectionResponse(t *testing.T, resp *http.Response, scope string, roles []string) {
+	t.Helper()
+
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("introspection status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+	}
+	claims := decodeJSONMap(t, body)
+	if claims["active"] != true || claims["sub"] != testSubject || claims["scope"] != scope {
+		t.Fatalf("unexpected introspection response: %#v", claims)
+	}
+	for scopeName, expected := range map[string]map[string]any{
+		"profile": {
+			"name": testName, "preferred_username": testPreferredUsername,
+			"profile": testProfile, "picture": testPicture, "locale": testLocale,
+		},
+		"email": {"email": testEmail, "email_verified": true},
+	} {
+		granted := slices.Contains(strings.Fields(scope), scopeName)
+		for name, want := range expected {
+			value, present := claims[name]
+			if present != granted || (granted && value != want) {
+				t.Fatalf("claim %s for scope %q: got %#v (present=%t), want %#v (present=%t)", name, scope, value, present, want, granted)
+			}
+		}
+	}
+	var response introspectionResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatalf("failed to decode introspection response: %v\nbody=%s", err, body)
+	}
+	for _, claim := range []struct {
+		name string
+		got  []string
+		want []string
+	}{
+		{"groups", response.Groups, testGroups},
+		{"roles", response.Roles, roles},
+	} {
+		granted := slices.Contains(strings.Fields(scope), claim.name)
+		_, present := claims[claim.name]
+		if present != granted || (granted && !slices.Equal(claim.got, claim.want)) {
+			t.Fatalf("claim %s for scope %q: got %#v (present=%t), want %#v (present=%t)", claim.name, scope, claim.got, present, claim.want, granted)
+		}
+	}
 }
 
 func expectInactiveIntrospectionResponse(t *testing.T, resp *http.Response) {

@@ -464,6 +464,50 @@ func testBackChannelLogoutClientRegistration(t *testing.T) {
 			t.Fatal("expected backchannelLogoutSessionRequired to be true")
 		}
 	})
+
+	t.Run("accepts absolute URIs with query parameters", func(t *testing.T) {
+		_, receiverURL := startBackchannelLogoutReceiver(t)
+		logoutURI := receiverURL + "?tenant=alpha&tag=one&tag=two"
+		provider := startProvider(t, backchannelProviderConfig(logoutURI, false))
+		client := provider.idp.clients[webClientID]
+		if got := client.backchannelLogoutURI.String(); got != logoutURI {
+			t.Fatalf("back-channel logout URI mismatch: got %q, want %q", got, logoutURI)
+		}
+	})
+
+	t.Run("rejects invalid back-channel logout URIs", func(t *testing.T) {
+		for _, logoutURI := range []string{
+			"http://127.0.0.1/backchannel#fragment",
+			"http://127.0.0.1/backchannel#",
+			"/backchannel",
+			"https:/backchannel",
+			"https:///backchannel",
+			"ftp://127.0.0.1/backchannel",
+			"http://user:password@127.0.0.1/backchannel",
+			"http://127.0.0.1/%invalid",
+		} {
+			t.Run(logoutURI, func(t *testing.T) {
+				environ := []string{
+					"SIMPLE_IDP_CLIENT_WEB_ID=" + webClientID,
+					"SIMPLE_IDP_CLIENT_WEB_SECRET=" + webClientSecret,
+					"SIMPLE_IDP_CLIENT_WEB_REDIRECT_URL=" + webClientRedirect,
+					"SIMPLE_IDP_CLIENT_WEB_BACKCHANNEL_LOGOUT_URI=" + logoutURI,
+				}
+				_, err := loadClients(environ, func(name string) string {
+					for _, item := range environ {
+						key, value, _ := strings.Cut(item, "=")
+						if key == name {
+							return value
+						}
+					}
+					return ""
+				})
+				if err == nil || !strings.Contains(err.Error(), "backchannel logout URI") {
+					t.Fatalf("expected invalid back-channel logout URI error, got %v", err)
+				}
+			})
+		}
+	})
 }
 
 func testBackChannelLogoutRememberingRPs(t *testing.T) {
