@@ -8,6 +8,7 @@ package simpleidp
 // OIDC Back-Channel Logout 1.0: https://openid.net/specs/openid-connect-backchannel-1_0.html
 // OAuth 2.1 draft 15: https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-15.txt
 // RFC 7662: https://www.rfc-editor.org/rfc/rfc7662.txt
+// RFC 7009: https://www.rfc-editor.org/rfc/rfc7009.txt
 // RFC 9068: https://www.rfc-editor.org/rfc/rfc9068.txt
 // Simple IdP: README.md
 
