@@ -2711,7 +2711,7 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 		sub := envOr(lookupEnv, prefix+label+"_SUB", fmt.Sprintf("%x", sha256.Sum256([]byte(username))))
 		name := envOr(lookupEnv, prefix+label+"_NAME", username)
 		preferredUsername := envOr(lookupEnv, prefix+label+"_PREFERRED_USERNAME", username)
-		email := envOr(lookupEnv, prefix+label+"_EMAIL", username+"@localhost")
+		email := envOr(lookupEnv, prefix+label+"_EMAIL", strings.ReplaceAll(url.PathEscape(username), "..", ".%2E")+"@localhost")
 		emailVerified := envOr(lookupEnv, prefix+label+"_EMAIL_VERIFIED", "true") == "true"
 		profile := envOr(lookupEnv, prefix+label+"_PROFILE", "")
 		picture := envOr(lookupEnv, prefix+label+"_PICTURE", "")

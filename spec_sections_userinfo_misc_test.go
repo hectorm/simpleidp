@@ -40,22 +40,27 @@ func testStandardClaims(t *testing.T) {
 		}
 	})
 
-	t.Run("derives the default subject from the username", func(t *testing.T) {
-		for _, kind := range []string{"ascii", "non-ascii", "over 255 characters"} {
+	t.Run("derives the default subject and email from the username", func(t *testing.T) {
+		for _, kind := range []string{"ascii", "non-ascii", "over 255 characters", "special characters", "consecutive dots"} {
 			t.Run(kind, func(t *testing.T) {
-				username := testUsername
+				username, email := testUsername, testUsername+"@localhost"
 				switch kind {
 				case "non-ascii":
-					username = "josé"
+					username, email = "josé", "jos%C3%A9@localhost"
 				case "over 255 characters":
-					username = strings.Repeat("a", 256)
+					username, email = strings.Repeat("a", 256), strings.Repeat("a", 256)+"@localhost"
+				case "special characters":
+					username, email = "alice smith 100%", "alice%20smith%20100%25@localhost"
+				case "consecutive dots":
+					username, email = "alice..smith", "alice.%2Esmith@localhost"
 				}
 				config := defaultProviderConfig()
 				config.Users[0].Username = username
 				config.Users[0].Sub = ""
+				config.Users[0].Email = ""
 				provider := startProvider(t, config)
 
-				request := newDefaultConfidentialAuthorizationRequest("default-subject")
+				request := newDefaultConfidentialAuthorizationRequest("default-claims")
 				resp := provider.getAuthorize(t, authorizeParams(request))
 				body := readBody(t, resp)
 				if resp.StatusCode != http.StatusOK {
@@ -70,8 +75,12 @@ func testStandardClaims(t *testing.T) {
 					CodeVerifier: request.Verifier,
 				})
 
-				if claims := verifyIDToken(t, provider, token.IDToken); claims.Sub != defaultSubject(username) {
+				claims := verifyIDToken(t, provider, token.IDToken)
+				if claims.Sub != defaultSubject(username) {
 					t.Fatalf("subject mismatch: got %q, want %q", claims.Sub, defaultSubject(username))
+				}
+				if claims.Email != email {
+					t.Fatalf("email mismatch: got %q, want %q", claims.Email, email)
 				}
 			})
 		}
