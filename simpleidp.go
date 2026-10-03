@@ -8,6 +8,7 @@
 // SIMPLE_IDP_TITLE        - login page title (default: "Simple IdP")
 // SIMPLE_IDP_ACCENT_COLOR - accent color for the pages (default: "oklch(49% 0.19 264)")
 // SIMPLE_IDP_FAVICON      - favicon URL or data URI (default: blank icon)
+// SIMPLE_IDP_EDIT_PROFILE - let users edit their profile, not persisted (default: "false")
 // SIMPLE_IDP_KEY_ID       - JWKS key ID (default: "simple-idp")
 // SIMPLE_IDP_KEY_FILE     - PEM file for PKCS8 RSA private key; generated in memory if empty
 // SIMPLE_IDP_KEY_B64      - base64-encoded PKCS8 RSA private key (alternative to KEY_FILE)
@@ -25,7 +26,7 @@
 //
 // SIMPLE_IDP_USER_<LABEL>_USERNAME           - login username (required)
 // SIMPLE_IDP_USER_<LABEL>_PASSWORD           - login password (required)
-// SIMPLE_IDP_USER_<LABEL>_SUB                - "sub" claim (default: hex SHA-256 of <USERNAME>)
+// SIMPLE_IDP_USER_<LABEL>_SUB                - "sub" claim (default: hex SHA-256 of <LABEL>)
 // SIMPLE_IDP_USER_<LABEL>_NAME               - "name" claim (default: <USERNAME>)
 // SIMPLE_IDP_USER_<LABEL>_PREFERRED_USERNAME - "preferred_username" claim (default: <USERNAME>)
 // SIMPLE_IDP_USER_<LABEL>_EMAIL              - "email" claim (default: <USERNAME>@localhost)
@@ -40,6 +41,7 @@
 package simpleidp
 
 import (
+	"cmp"
 	"compress/gzip"
 	"context"
 	"crypto"
@@ -113,6 +115,7 @@ type client struct {
 }
 
 type user struct {
+	label             string
 	username          string
 	password          string
 	sub               string
@@ -128,7 +131,7 @@ type user struct {
 }
 
 type session struct {
-	username        string
+	userLabel       string
 	cookieDigest    [sha256.Size]byte
 	clientIDs       map[string]struct{}
 	authenticatedAt time.Time
@@ -137,7 +140,7 @@ type session struct {
 
 type accessToken struct {
 	clientID  string
-	username  string
+	userLabel string
 	scope     string
 	code      string
 	sessionID string
@@ -146,7 +149,7 @@ type accessToken struct {
 
 type refreshToken struct {
 	clientID         string
-	username         string
+	userLabel        string
 	scope            string
 	code             string
 	sessionID        string
@@ -158,7 +161,7 @@ type refreshToken struct {
 
 type pendingCode struct {
 	clientID        string
-	username        string
+	userLabel       string
 	redirectURI     url.URL
 	codeChallenge   string
 	nonce           string
@@ -193,6 +196,7 @@ type identityProvider struct {
 	title         string
 	accentColor   template.CSS
 	favicon       template.URL
+	editProfile   bool
 	keyID         string
 	privKey       *rsa.PrivateKey
 	csrfKey       []byte
@@ -232,6 +236,7 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 	title := envOr(lookupEnv, "SIMPLE_IDP_TITLE", "Simple IdP")
 	accentColor := template.CSS(envOr(lookupEnv, "SIMPLE_IDP_ACCENT_COLOR", "oklch(49% 0.19 264)")) // #nosec G203
 	favicon := template.URL(envOr(lookupEnv, "SIMPLE_IDP_FAVICON", ""))                             // #nosec G203
+	editProfile := lookupEnv("SIMPLE_IDP_EDIT_PROFILE") == "true"
 	keyID := envOr(lookupEnv, "SIMPLE_IDP_KEY_ID", "simple-idp")
 	privKey, err := loadOrGenerateKey(lookupEnv, readFile)
 	if err != nil {
@@ -249,6 +254,7 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 		title:         title,
 		accentColor:   accentColor,
 		favicon:       favicon,
+		editProfile:   editProfile,
 		keyID:         keyID,
 		privKey:       privKey,
 		csrfKey:       csrfKey,
@@ -265,6 +271,9 @@ func newServer(listen string, provider *identityProvider) *http.Server {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET "+provider.base+"/{$}", provider.handleProfile)
+	if provider.editProfile {
+		mux.HandleFunc("POST "+provider.base+"/{$}", provider.handleProfile)
+	}
 	mux.HandleFunc("GET "+provider.base+"/login", provider.handleLogin)
 	mux.HandleFunc("POST "+provider.base+"/login", provider.handleLogin)
 	mux.HandleFunc("GET "+provider.base+"/.well-known/openid-configuration", provider.handleDiscovery)
@@ -307,7 +316,46 @@ func (p *identityProvider) handleProfile(w http.ResponseWriter, r *http.Request)
 		http.Redirect(w, r, p.base+"/login", http.StatusFound)
 		return
 	}
-	p.renderProfilePage(w, r, p.users[currentSession.username], sessionID)
+	profileUser, _ := p.lookupUser(currentSession.userLabel)
+	if r.Method != http.MethodPost {
+		p.renderProfilePage(w, r, profileUser, sessionID, "")
+		return
+	}
+
+	if err := parseForm(w, r); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+	if !hasUniqueParams(r.PostForm) {
+		http.Error(w, "Duplicate parameter", http.StatusBadRequest)
+		return
+	}
+	if !p.validateCSRFToken(r.PostForm.Get("csrf_token"), "session:"+sessionID) {
+		http.Error(w, "Invalid or expired session", http.StatusBadRequest)
+		return
+	}
+	if !utf8.ValidString(r.PostForm.Get("username")) || !utf8.ValidString(r.PostForm.Get("name")) {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	profileUser.username = r.PostForm.Get("username")
+	profileUser.name = r.PostForm.Get("name")
+	profileUser.email = r.PostForm.Get("email")
+	errorMsg := ""
+	switch {
+	case profileUser.username == "" || profileUser.name == "":
+		errorMsg = "Username and name are required"
+	case !isValidEmail(profileUser.email):
+		errorMsg = "Invalid email address"
+	case !p.updateUser(profileUser):
+		errorMsg = "Username already taken"
+	}
+	if errorMsg != "" {
+		p.renderProfilePage(w, r, profileUser, sessionID, errorMsg)
+		return
+	}
+	http.Redirect(w, r, p.base+"/", http.StatusSeeOther)
 }
 
 func (p *identityProvider) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +389,7 @@ func (p *identityProvider) handleLogin(w http.ResponseWriter, r *http.Request) {
 		p.renderLoginForm(w, r, p.base+"/login", nil, username, "Invalid username or password")
 		return
 	}
-	p.issueSession(w, authenticatedUser.username, time.Now(), p.readSession(r))
+	p.issueSession(w, authenticatedUser.label, time.Now(), p.readSession(r))
 	p.clearPreAuthSession(w)
 	http.Redirect(w, r, p.base+"/", http.StatusSeeOther)
 }
@@ -577,13 +625,13 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 			redirectWithError(w, r, p.issuer, *redirectURI, state, "interaction_required", "Public clients require end-user interaction")
 			return
 		}
-		p.authorizeUser(w, r, authorization, currentSession.username, currentSession.authenticatedAt, sessionID)
+		p.authorizeUser(w, r, authorization, currentSession.userLabel, currentSession.authenticatedAt, sessionID)
 		return
 	}
 
 	if sessionKnown && (r.Method == http.MethodGet || (username == "" && password == "")) {
 		authorization.consentRequired = authorization.consentRequired || client.isPublic
-		p.authorizeUser(w, r, authorization, currentSession.username, currentSession.authenticatedAt, sessionID)
+		p.authorizeUser(w, r, authorization, currentSession.userLabel, currentSession.authenticatedAt, sessionID)
 		return
 	}
 
@@ -601,9 +649,9 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	authenticatedAt := time.Now()
-	sessionID = p.issueSession(w, authenticatedUser.username, authenticatedAt, sessionID)
+	sessionID = p.issueSession(w, authenticatedUser.label, authenticatedAt, sessionID)
 	p.clearPreAuthSession(w)
-	p.authorizeUser(w, r, authorization, authenticatedUser.username, authenticatedAt, sessionID)
+	p.authorizeUser(w, r, authorization, authenticatedUser.label, authenticatedAt, sessionID)
 }
 
 func (p *identityProvider) handleToken(w http.ResponseWriter, r *http.Request) {
@@ -758,7 +806,7 @@ func (p *identityProvider) handleIntrospect(w http.ResponseWriter, r *http.Reque
 		if !accessTokenKnown || storedAccessToken.clientID != client.id {
 			return false
 		}
-		user := p.users[storedAccessToken.username]
+		user, _ := p.lookupUser(storedAccessToken.userLabel)
 		writeActiveResponse(user, storedAccessToken.clientID, storedAccessToken.scope, storedAccessToken.expiry, "Bearer")
 		return true
 	}
@@ -766,7 +814,7 @@ func (p *identityProvider) handleIntrospect(w http.ResponseWriter, r *http.Reque
 		if !refreshTokenKnown || !storedRefreshToken.consumedAt.IsZero() || storedRefreshToken.clientID != client.id {
 			return false
 		}
-		user := p.users[storedRefreshToken.username]
+		user, _ := p.lookupUser(storedRefreshToken.userLabel)
 		writeActiveResponse(user, storedRefreshToken.clientID, storedRefreshToken.scope, refreshTokenExpiry(storedRefreshToken), "")
 		return true
 	}
@@ -972,9 +1020,10 @@ type formPageField struct {
 }
 
 type formPageButton struct {
-	Name  string
-	Value string
-	Label string
+	Name   string
+	Value  string
+	Label  string
+	Action string
 }
 
 type formPageLink struct {
@@ -1158,7 +1207,7 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 				background: color-mix(in oklch, var(--color-accent) 70%, light-dark(black, white));
 			}
 		}
-		button[value=no], a {
+		button[value=no], button[formaction], a {
 			border-color: var(--color-border);
 			color: var(--color-text);
 			background: transparent;
@@ -1225,6 +1274,10 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 						name="{{.Name}}"
 						value="{{.Value}}"
 						{{- end}}
+						{{- if .Action}}
+						formaction="{{.Action}}"
+						formnovalidate
+						{{- end}}
 						data-testid="submit{{if .Value}}-{{.Value}}{{end}}"
 					>{{.Label}}</button>
 				</li>
@@ -1278,24 +1331,39 @@ func (p *identityProvider) renderFormPage(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func (p *identityProvider) renderProfilePage(w http.ResponseWriter, r *http.Request, user user, sessionID string) {
+func (p *identityProvider) renderProfilePage(w http.ResponseWriter, r *http.Request, user user, sessionID, errorMsg string) {
 	csrfToken := p.issueCSRFToken("session:" + sessionID)
-	p.renderFormPage(w, r, formPage{
+	page := formPage{
 		Title:  p.title,
-		Action: p.base + "/end-session",
+		Error:  errorMsg,
 		TestID: "page-profile",
 		Params: url.Values{
 			"csrf_token": {csrfToken},
 		},
-		Details: []formPageDetail{
+	}
+	if p.editProfile {
+		page.Action = p.base + "/"
+		page.Fields = []formPageField{
+			{Type: "text", Name: "name", Label: "Name", Value: user.name, Autocomplete: "name"},
+			{Type: "text", Name: "username", Label: "Username", Value: user.username, Autocomplete: "username"},
+			{Type: "text", Name: "email", Label: "Email", Value: user.email, Autocomplete: "email"},
+		}
+		page.Buttons = []formPageButton{
+			{Label: "Save"},
+			{Name: "confirm", Value: "yes", Label: "Log out", Action: p.base + "/end-session"},
+		}
+	} else {
+		page.Action = p.base + "/end-session"
+		page.Details = []formPageDetail{
 			{Label: "Name", Value: user.name},
 			{Label: "Username", Value: user.username},
 			{Label: "Email", Value: user.email},
-		},
-		Buttons: []formPageButton{
+		}
+		page.Buttons = []formPageButton{
 			{Name: "confirm", Value: "yes", Label: "Log out"},
-		},
-	})
+		}
+	}
+	p.renderFormPage(w, r, page)
 }
 
 func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Request, action string, params url.Values, username, errorMsg string) {
@@ -1480,7 +1548,7 @@ func (p *identityProvider) resolveIDTokenHint(token string) (tokenHint, bool) {
 	return tokenHint{sub: claims.Sub, aud: aud}, true
 }
 
-func (p *identityProvider) authorizeUser(w http.ResponseWriter, r *http.Request, authorization authorizeRequest, username string, authenticatedAt time.Time, sessionID string) {
+func (p *identityProvider) authorizeUser(w http.ResponseWriter, r *http.Request, authorization authorizeRequest, userLabel string, authenticatedAt time.Time, sessionID string) {
 	issuedCode := rand.Text()
 
 	p.mu.Lock()
@@ -1492,7 +1560,7 @@ func (p *identityProvider) authorizeUser(w http.ResponseWriter, r *http.Request,
 	}
 	p.pendingCodes[issuedCode] = pendingCode{
 		clientID:        authorization.client.id,
-		username:        username,
+		userLabel:       userLabel,
 		redirectURI:     authorization.redirectURI,
 		codeChallenge:   authorization.codeChallenge,
 		nonce:           authorization.nonce,
@@ -1570,7 +1638,7 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 		return
 	}
 
-	user := p.users[pendingCode.username]
+	user, _ := p.lookupUser(pendingCode.userLabel)
 	accessTokenValue := rand.Text()
 	refreshTokenValue := rand.Text()
 	idToken, err := p.mintIDToken(user, client, pendingCode, accessTokenValue)
@@ -1593,7 +1661,7 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 	p.pendingCodes[code] = pendingCode
 	p.accessTokens[accessTokenValue] = accessToken{
 		clientID:  client.id,
-		username:  user.username,
+		userLabel: user.label,
 		scope:     pendingCode.scope,
 		code:      code,
 		sessionID: pendingCode.sessionID,
@@ -1601,7 +1669,7 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 	}
 	p.refreshTokens[refreshTokenValue] = refreshToken{
 		clientID:         client.id,
-		username:         user.username,
+		userLabel:        user.label,
 		scope:            pendingCode.scope,
 		code:             code,
 		sessionID:        pendingCode.sessionID,
@@ -1662,7 +1730,7 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	user := p.users[storedRefreshToken.username]
+	user, _ := p.lookupUser(storedRefreshToken.userLabel)
 	newAccessTokenValue := rand.Text()
 	newRefreshTokenValue := rand.Text()
 
@@ -1692,7 +1760,7 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 	p.refreshTokens[refreshTokenValue] = storedRefreshToken
 	p.accessTokens[newAccessTokenValue] = accessToken{
 		clientID:  client.id,
-		username:  user.username,
+		userLabel: user.label,
 		scope:     effectiveAccessScope,
 		code:      storedRefreshToken.code,
 		sessionID: storedRefreshToken.sessionID,
@@ -1700,7 +1768,7 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 	}
 	p.refreshTokens[newRefreshTokenValue] = refreshToken{
 		clientID:         client.id,
-		username:         storedRefreshToken.username,
+		userLabel:        storedRefreshToken.userLabel,
 		scope:            storedRefreshToken.scope,
 		code:             storedRefreshToken.code,
 		sessionID:        storedRefreshToken.sessionID,
@@ -1788,7 +1856,7 @@ func (p *identityProvider) readSession(r *http.Request) string {
 	return p.sessionIDFromCookie(p.readCookie(r, sessionCookieBaseName))
 }
 
-func (p *identityProvider) issueSession(w http.ResponseWriter, username string, authenticatedAt time.Time, sessionID string) string {
+func (p *identityProvider) issueSession(w http.ResponseWriter, userLabel string, authenticatedAt time.Time, sessionID string) string {
 	cookie := p.newCookie(sessionCookieBaseName) // #nosec G124
 	cookie.Value = rand.Text()
 	cookieDigest := sha256.Sum256([]byte(cookie.Value))
@@ -1796,7 +1864,7 @@ func (p *identityProvider) issueSession(w http.ResponseWriter, username string, 
 	if sessionID != "" {
 		p.mu.Lock()
 		currentSession, sessionKnown := p.sessions[sessionID]
-		if sessionKnown && currentSession.username == username && !isSessionExpired(currentSession, authenticatedAt) {
+		if sessionKnown && currentSession.userLabel == userLabel && !isSessionExpired(currentSession, authenticatedAt) {
 			currentSession.cookieDigest = cookieDigest
 			currentSession.authenticatedAt = authenticatedAt
 			currentSession.lastSeenAt = authenticatedAt
@@ -1812,7 +1880,7 @@ func (p *identityProvider) issueSession(w http.ResponseWriter, username string, 
 	sessionID = rand.Text()
 	p.mu.Lock()
 	p.sessions[sessionID] = session{
-		username:        username,
+		userLabel:       userLabel,
 		cookieDigest:    cookieDigest,
 		clientIDs:       map[string]struct{}{},
 		authenticatedAt: authenticatedAt,
@@ -1848,7 +1916,7 @@ func (p *identityProvider) clearSession(w http.ResponseWriter, sessionID string)
 	cookie.MaxAge = -1
 	http.SetCookie(w, cookie)
 
-	logoutUser := p.users[currentSession.username]
+	logoutUser, _ := p.lookupUser(currentSession.userLabel)
 	var wg sync.WaitGroup
 	for clientID := range currentSession.clientIDs {
 		client, ok := p.clients[clientID]
@@ -1885,7 +1953,7 @@ func (p *identityProvider) resumeSession(sessionID string) (session, bool) {
 }
 
 func (p *identityProvider) canReuseSession(currentSession session, hintedUser tokenHint, maxAge time.Duration, maxAgeRequested bool) bool {
-	currentUser, ok := p.users[currentSession.username]
+	currentUser, ok := p.lookupUser(currentSession.userLabel)
 	if !ok {
 		return false
 	}
@@ -2025,12 +2093,34 @@ func isPendingCodeExpired(code pendingCode, now time.Time) bool {
 
 // -------------------------------------------------------------------------- //
 
-func (p *identityProvider) authenticateEndUser(username, password string) (user, bool) {
-	authenticatedUser, ok := p.users[username]
-	if !ok || subtle.ConstantTimeCompare([]byte(password), []byte(authenticatedUser.password)) != 1 {
-		return user{}, false
+func (p *identityProvider) lookupUser(label string) (user, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	currentUser, ok := p.users[label]
+	return currentUser, ok
+}
+
+func (p *identityProvider) updateUser(updatedUser user) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for label, otherUser := range p.users {
+		if label != updatedUser.label && otherUser.username == updatedUser.username {
+			return false
+		}
 	}
-	return authenticatedUser, true
+	p.users[updatedUser.label] = updatedUser
+	return true
+}
+
+func (p *identityProvider) authenticateEndUser(username, password string) (user, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, candidate := range p.users {
+		if candidate.username == username && subtle.ConstantTimeCompare([]byte(password), []byte(candidate.password)) == 1 {
+			return candidate, true
+		}
+	}
+	return user{}, false
 }
 
 func (p *identityProvider) authenticateClient(w http.ResponseWriter, r *http.Request) (client, bool) {
@@ -2085,7 +2175,8 @@ func (p *identityProvider) resolveBearerToken(token string) (user, accessToken, 
 		return user{}, accessToken{}, false
 	}
 
-	return p.users[storedAccessToken.username], storedAccessToken, true
+	currentUser, _ := p.lookupUser(storedAccessToken.userLabel)
+	return currentUser, storedAccessToken, true
 }
 
 // -------------------------------------------------------------------------- //
@@ -2228,7 +2319,7 @@ func (p *identityProvider) buildClaimsForScope(user user, scope string) map[stri
 			claims["email_verified"] = user.emailVerified
 		case "profile":
 			claims["name"] = user.name
-			claims["preferred_username"] = user.preferredUsername
+			claims["preferred_username"] = cmp.Or(user.preferredUsername, user.username)
 			if user.profile != "" {
 				claims["profile"] = user.profile
 			}
@@ -2704,13 +2795,14 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 	)
 
 	users := map[string]user{}
+	usernames := map[string]struct{}{}
 	subs := map[string]struct{}{}
 	for label := range labels {
 		username := envOr(lookupEnv, prefix+label+"_USERNAME", "")
 		password := envOr(lookupEnv, prefix+label+"_PASSWORD", "")
-		sub := envOr(lookupEnv, prefix+label+"_SUB", fmt.Sprintf("%x", sha256.Sum256([]byte(username))))
+		sub := envOr(lookupEnv, prefix+label+"_SUB", fmt.Sprintf("%x", sha256.Sum256([]byte(label))))
 		name := envOr(lookupEnv, prefix+label+"_NAME", username)
-		preferredUsername := envOr(lookupEnv, prefix+label+"_PREFERRED_USERNAME", username)
+		preferredUsername := envOr(lookupEnv, prefix+label+"_PREFERRED_USERNAME", "")
 		email := envOr(lookupEnv, prefix+label+"_EMAIL", strings.ReplaceAll(url.PathEscape(username), "..", ".%2E")+"@localhost")
 		emailVerified := envOr(lookupEnv, prefix+label+"_EMAIL_VERIFIED", "true") == "true"
 		profile := envOr(lookupEnv, prefix+label+"_PROFILE", "")
@@ -2723,9 +2815,10 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 			return nil, fmt.Errorf("incomplete user configuration for label %q", label)
 		}
 
-		if _, dup := users[username]; dup {
+		if _, dup := usernames[username]; dup {
 			return nil, fmt.Errorf("duplicate username %q", username)
 		}
+		usernames[username] = struct{}{}
 
 		if len(sub) > 255 || !isASCII(sub) {
 			return nil, fmt.Errorf("user %q: sub claim must not exceed 255 ASCII characters", label)
@@ -2739,7 +2832,8 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 			return nil, fmt.Errorf("user %q: email must be a valid RFC 5322 addr-spec", label)
 		}
 
-		users[username] = user{
+		users[label] = user{
+			label:             label,
 			username:          username,
 			password:          password,
 			sub:               sub,

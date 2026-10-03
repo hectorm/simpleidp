@@ -133,6 +133,16 @@ func submitConsentForm(t *testing.T, provider *providerProcess, formBody []byte,
 	return provider.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, formBody)), form, "", false)
 }
 
+func submitProfileForm(t *testing.T, provider *providerProcess, formBody []byte, name, username, email string) *http.Response {
+	t.Helper()
+
+	form := extractHiddenInputs(t, formBody)
+	form.Set("name", name)
+	form.Set("username", username)
+	form.Set("email", email)
+	return provider.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, formBody)), form, "", false)
+}
+
 func expectResubmitForm(t *testing.T, resp *http.Response, params url.Values) []byte {
 	t.Helper()
 

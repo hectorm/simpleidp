@@ -87,6 +87,9 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 		"SIMPLE_IDP_TITLE=Integration Test Provider",
 		"SIMPLE_IDP_KEY_B64=" + signingKey,
 	}
+	if config.EditProfile {
+		env = append(env, "SIMPLE_IDP_EDIT_PROFILE=true")
+	}
 	for _, client := range config.Clients {
 		prefix := "SIMPLE_IDP_CLIENT_" + client.Label + "_"
 		env = append(env,
@@ -989,8 +992,8 @@ func accessTokenHash(accessToken string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:len(sum)/2])
 }
 
-func defaultSubject(username string) string {
-	sum := sha256.Sum256([]byte(username))
+func defaultSubject(label string) string {
+	sum := sha256.Sum256([]byte(label))
 	return hex.EncodeToString(sum[:])
 }
 

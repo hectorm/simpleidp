@@ -36,6 +36,7 @@ All configuration is done through environment variables. At least one client and
 | `SIMPLE_IDP_TITLE`        | Login page title (default `Simple IdP`)                          |
 | `SIMPLE_IDP_ACCENT_COLOR` | Accent color for the pages (default `oklch(49% 0.19 264)`)       |
 | `SIMPLE_IDP_FAVICON`      | Favicon URL or data URI (default: blank icon)                    |
+| `SIMPLE_IDP_EDIT_PROFILE` | Let users edit their profile, not persisted (default `false`)    |
 | `SIMPLE_IDP_KEY_ID`       | JWKS key ID (default `simple-idp`)                               |
 | `SIMPLE_IDP_KEY_FILE`     | PEM file for PKCS8 RSA private key; generated in memory if empty |
 | `SIMPLE_IDP_KEY_B64`      | Base64-encoded PKCS8 RSA private key (alternative to `KEY_FILE`) |
@@ -61,7 +62,7 @@ Users are configured the same way as clients, with a label prefix.
 | -------------------------------------------- | -------------------------------------------------- |
 | `SIMPLE_IDP_USER_<LABEL>_USERNAME`           | Login username (required)                          |
 | `SIMPLE_IDP_USER_<LABEL>_PASSWORD`           | Login password (required)                          |
-| `SIMPLE_IDP_USER_<LABEL>_SUB`                | `sub` claim (default: hex SHA-256 of `<USERNAME>`) |
+| `SIMPLE_IDP_USER_<LABEL>_SUB`                | `sub` claim (default: hex SHA-256 of `<LABEL>`)    |
 | `SIMPLE_IDP_USER_<LABEL>_NAME`               | `name` claim (default: `<USERNAME>`)               |
 | `SIMPLE_IDP_USER_<LABEL>_PREFERRED_USERNAME` | `preferred_username` claim (default: `<USERNAME>`) |
 | `SIMPLE_IDP_USER_<LABEL>_EMAIL`              | `email` claim (default: `<USERNAME>@localhost`)    |

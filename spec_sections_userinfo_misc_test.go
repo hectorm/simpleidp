@@ -5,6 +5,7 @@ package simpleidp
 // OAuth 2.1 draft 15: https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-15.txt
 
 import (
+	"cmp"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -40,7 +41,7 @@ func testStandardClaims(t *testing.T) {
 		}
 	})
 
-	t.Run("derives the default subject and email from the username", func(t *testing.T) {
+	t.Run("derives the default subject from the label and the email from the username", func(t *testing.T) {
 		for _, kind := range []string{"ascii", "non-ascii", "over 255 characters", "special characters", "consecutive dots"} {
 			t.Run(kind, func(t *testing.T) {
 				username, email := testUsername, testUsername+"@localhost"
@@ -76,8 +77,8 @@ func testStandardClaims(t *testing.T) {
 				})
 
 				claims := verifyIDToken(t, provider, token.IDToken)
-				if claims.Sub != defaultSubject(username) {
-					t.Fatalf("subject mismatch: got %q, want %q", claims.Sub, defaultSubject(username))
+				if claims.Sub != defaultSubject(config.Users[0].Label) {
+					t.Fatalf("subject mismatch: got %q, want %q", claims.Sub, defaultSubject(config.Users[0].Label))
 				}
 				if claims.Email != email {
 					t.Fatalf("email mismatch: got %q, want %q", claims.Email, email)
@@ -125,10 +126,10 @@ func testStandardClaims(t *testing.T) {
 				if len(provider.idp.users) != 2 {
 					t.Fatalf("expected 2 users, got %d", len(provider.idp.users))
 				}
-				for _, username := range []string{testUsername, "bob"} {
-					user, ok := provider.idp.users[username]
-					if !ok || user.preferredUsername != "bob" {
-						t.Fatalf("preferred username mismatch for %q: got %q, want %q", username, user.preferredUsername, "bob")
+				for _, label := range []string{"ALICE", "ALICE_PREFERRED"} {
+					user, ok := provider.idp.users[label]
+					if preferredUsername := cmp.Or(user.preferredUsername, user.username); !ok || preferredUsername != "bob" {
+						t.Fatalf("preferred username mismatch for %q: got %q, want %q", label, preferredUsername, "bob")
 					}
 				}
 			})
@@ -991,6 +992,189 @@ func testProfileLogin(t *testing.T) {
 	})
 }
 
+func testProfileUpdate(t *testing.T) {
+	t.Run("keeps the profile read-only by default", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		request := newDefaultConfidentialAuthorizationRequest("profile-update-disabled")
+		_ = authorizeAndLogin(t, provider, request)
+		body := fetchProfilePage(t, provider)
+		if strings.Contains(string(body), `data-testid="field-username"`) {
+			t.Fatalf("unexpected profile fields, got body=%s", body)
+		}
+
+		form := url.Values{
+			"username":   {"carol"},
+			"csrf_token": {extractHiddenInputValue(t, body, "csrf_token")},
+		}
+		resp := provider.postFormURL(t, provider.endpoint("/"), form, "", false)
+		body = readBody(t, resp)
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("profile update status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusMethodNotAllowed, body)
+		}
+	})
+
+	t.Run("updates the profile and returns to it", func(t *testing.T) {
+		for _, issuerPath := range []string{"", "/tenant-a"} {
+			config := defaultProviderConfig()
+			config.IssuerPath = issuerPath
+			config.EditProfile = true
+			provider := startProvider(t, config)
+			request := newDefaultConfidentialAuthorizationRequest("profile-update")
+			token := authorizeAndExchange(t, provider, request, tokenRequest{
+				ClientID:     request.ClientID,
+				ClientSecret: webClientSecret,
+				CodeVerifier: request.Verifier,
+			})
+			body := fetchProfilePage(t, provider)
+			if !strings.Contains(string(body), `data-testid="field-username"`) || !strings.Contains(string(body), `formaction="`+issuerPath+`/end-session"`) {
+				t.Fatalf("expected editable profile, got body=%s", body)
+			}
+
+			redirect := expectRedirect(t, submitProfileForm(t, provider, body, "Alice Smith", testUsername, "alice.smith@example.com"), http.StatusSeeOther)
+			assertRedirectTarget(t, redirect, issuerPath+"/")
+			body = fetchProfilePage(t, provider)
+			if !strings.Contains(string(body), "Alice Smith") || !strings.Contains(string(body), "alice.smith@example.com") {
+				t.Fatalf("expected updated profile, got body=%s", body)
+			}
+			userInfo := fetchUserInfo(t, provider, token.AccessToken)
+			if userInfo.Sub != testSubject || userInfo.Name != "Alice Smith" || userInfo.PreferredUsername != testPreferredUsername || userInfo.Email != "alice.smith@example.com" || !userInfo.EmailVerified {
+				t.Fatalf("unexpected profile claims: %#v", userInfo)
+			}
+		}
+	})
+
+	t.Run("renames the user", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.EditProfile = true
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("profile-update-rename")
+		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+		body := fetchProfilePage(t, provider)
+		redirect := expectRedirect(t, submitProfileForm(t, provider, body, testName, "carol", testEmail), http.StatusSeeOther)
+		assertRedirectTarget(t, redirect, "/")
+		if userInfo := fetchUserInfo(t, provider, token.AccessToken); userInfo.Sub != testSubject || userInfo.PreferredUsername != "carol" {
+			t.Fatalf("unexpected profile claims: %#v", userInfo)
+		}
+
+		browser := newProviderBrowser(t, provider)
+		body = fetchLoginForm(t, browser)
+		resp := submitLoginForm(t, browser, body, testUsername, testPassword)
+		body = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("login status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if !strings.Contains(string(body), "Invalid username or password") {
+			t.Fatalf("expected invalid credentials message, got body=%s", body)
+		}
+		redirect = expectRedirect(t, submitLoginForm(t, browser, body, "carol", testPassword), http.StatusSeeOther)
+		assertRedirectTarget(t, redirect, "/")
+	})
+
+	t.Run("keeps configured preferred usernames on rename", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.EditProfile = true
+		config.Users[0].PreferredUsername = "alice.display"
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("profile-update-preferred-username")
+		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+		for _, username := range []string{"alice.display", "carol"} {
+			body := fetchProfilePage(t, provider)
+			redirect := expectRedirect(t, submitProfileForm(t, provider, body, testName, username, testEmail), http.StatusSeeOther)
+			assertRedirectTarget(t, redirect, "/")
+		}
+		if userInfo := fetchUserInfo(t, provider, token.AccessToken); userInfo.PreferredUsername != "alice.display" {
+			t.Fatalf("preferred_username mismatch: got %q, want %q", userInfo.PreferredUsername, "alice.display")
+		}
+	})
+
+	t.Run("allows retrying after invalid profile values", func(t *testing.T) {
+		for _, invalid := range []string{"empty name", "invalid email", "taken username"} {
+			t.Run(invalid, func(t *testing.T) {
+				config := defaultProviderConfig()
+				config.EditProfile = true
+				config.Users = append(config.Users, userConfig{
+					Label:    "BOB",
+					Username: "bob",
+					Password: "bob-password",
+				})
+				provider := startProvider(t, config)
+				request := newDefaultConfidentialAuthorizationRequest("profile-update-invalid-values")
+				_ = authorizeAndLogin(t, provider, request)
+				body := fetchProfilePage(t, provider)
+				name, username, email, message := testName, testUsername, testEmail, ""
+				switch invalid {
+				case "empty name":
+					name, message = "", "Username and name are required"
+				case "invalid email":
+					email, message = "alice", "Invalid email address"
+				case "taken username":
+					username, message = "bob", "Username already taken"
+				}
+				resp := submitProfileForm(t, provider, body, name, username, email)
+				body = readBody(t, resp)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("profile update status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+				}
+				if !strings.Contains(string(body), message) {
+					t.Fatalf("expected %q message, got body=%s", message, body)
+				}
+
+				redirect := expectRedirect(t, submitProfileForm(t, provider, body, testName, "carol", testEmail), http.StatusSeeOther)
+				assertRedirectTarget(t, redirect, "/")
+			})
+		}
+	})
+
+	t.Run("rejects invalid profile forms", func(t *testing.T) {
+		for _, invalid := range []string{"missing csrf token", "invalid csrf token", "other browser csrf token", "duplicate username", "invalid utf-8 name"} {
+			t.Run(invalid, func(t *testing.T) {
+				config := defaultProviderConfig()
+				config.EditProfile = true
+				provider := startProvider(t, config)
+				request := newDefaultConfidentialAuthorizationRequest("profile-update-invalid-form")
+				_ = authorizeAndLogin(t, provider, request)
+				body := fetchProfilePage(t, provider)
+				form := url.Values{
+					"name":       {"Mallory Example"},
+					"username":   {"mallory"},
+					"email":      {"mallory@example.com"},
+					"csrf_token": {extractHiddenInputValue(t, body, "csrf_token")},
+				}
+				switch invalid {
+				case "missing csrf token":
+					form.Del("csrf_token")
+				case "invalid csrf token":
+					form.Set("csrf_token", "invalid")
+				case "other browser csrf token":
+					otherBrowser := newProviderBrowser(t, provider)
+					_ = authorizeAndLogin(t, otherBrowser, request)
+					form.Set("csrf_token", extractHiddenInputValue(t, fetchProfilePage(t, otherBrowser), "csrf_token"))
+				case "duplicate username":
+					form.Add("username", "bob")
+				case "invalid utf-8 name":
+					form.Set("name", "\xff")
+				}
+				resp := provider.postFormURL(t, provider.endpoint("/"), form, "", false)
+				body = readBody(t, resp)
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Fatalf("invalid profile form status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
+				}
+				if body = fetchProfilePage(t, provider); strings.Contains(string(body), "mallory") {
+					t.Fatalf("unexpected profile update, got body=%s", body)
+				}
+			})
+		}
+	})
+}
+
 func testProfileLogout(t *testing.T) {
 	config := defaultProviderConfig()
 	config.IssuerPath = "/tenant-a"
@@ -1033,5 +1217,6 @@ func testProfileLogout(t *testing.T) {
 func TestProfileImplementation(t *testing.T) {
 	t.Run("profile page", testProfilePage)
 	t.Run("profile login", testProfileLogin)
+	t.Run("profile update", testProfileUpdate)
 	t.Run("profile logout", testProfileLogout)
 }

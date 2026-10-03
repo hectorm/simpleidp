@@ -36,9 +36,10 @@ const (
 var testGroups = []string{"admins", "developers"}
 
 type providerConfig struct {
-	IssuerPath string
-	Clients    []clientConfig
-	Users      []userConfig
+	IssuerPath  string
+	EditProfile bool
+	Clients     []clientConfig
+	Users       []userConfig
 }
 
 type clientConfig struct {
