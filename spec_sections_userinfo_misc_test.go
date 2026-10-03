@@ -40,6 +40,43 @@ func testStandardClaims(t *testing.T) {
 		}
 	})
 
+	t.Run("derives the default subject from the username", func(t *testing.T) {
+		for _, kind := range []string{"ascii", "non-ascii", "over 255 characters"} {
+			t.Run(kind, func(t *testing.T) {
+				username := testUsername
+				switch kind {
+				case "non-ascii":
+					username = "josé"
+				case "over 255 characters":
+					username = strings.Repeat("a", 256)
+				}
+				config := defaultProviderConfig()
+				config.Users[0].Username = username
+				config.Users[0].Sub = ""
+				provider := startProvider(t, config)
+
+				request := newDefaultConfidentialAuthorizationRequest("default-subject")
+				resp := provider.getAuthorize(t, authorizeParams(request))
+				body := readBody(t, resp)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+				}
+				code := expectAuthorizationCodeRedirect(t, submitLoginForm(t, provider, body, username, testPassword), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
+				token := exchangeAuthorizationCode(t, provider, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					Code:         code,
+					RedirectURI:  request.RedirectURI,
+					CodeVerifier: request.Verifier,
+				})
+
+				if claims := verifyIDToken(t, provider, token.IDToken); claims.Sub != defaultSubject(username) {
+					t.Fatalf("subject mismatch: got %q, want %q", claims.Sub, defaultSubject(username))
+				}
+			})
+		}
+	})
+
 	t.Run("supports configured preferred usernames without creating extra users", func(t *testing.T) {
 		for _, label := range []string{"ALICE", "ALICE_PREFERRED", "ALICE_PREFERRED_PREFERRED"} {
 			t.Run(label, func(t *testing.T) {

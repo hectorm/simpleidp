@@ -16,6 +16,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -986,6 +987,11 @@ func pkceVerifier(seed string) string {
 func accessTokenHash(accessToken string) string {
 	sum := sha256.Sum256([]byte(accessToken))
 	return base64.RawURLEncoding.EncodeToString(sum[:len(sum)/2])
+}
+
+func defaultSubject(username string) string {
+	sum := sha256.Sum256([]byte(username))
+	return hex.EncodeToString(sum[:])
 }
 
 func extractFormAction(t *testing.T, body []byte) string {

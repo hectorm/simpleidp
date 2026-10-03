@@ -25,7 +25,7 @@
 //
 // SIMPLE_IDP_USER_<LABEL>_USERNAME           - login username (required)
 // SIMPLE_IDP_USER_<LABEL>_PASSWORD           - login password (required)
-// SIMPLE_IDP_USER_<LABEL>_SUB                - "sub" claim (default: <USERNAME>)
+// SIMPLE_IDP_USER_<LABEL>_SUB                - "sub" claim (default: hex SHA-256 of <USERNAME>)
 // SIMPLE_IDP_USER_<LABEL>_NAME               - "name" claim (default: <USERNAME>)
 // SIMPLE_IDP_USER_<LABEL>_PREFERRED_USERNAME - "preferred_username" claim (default: <USERNAME>)
 // SIMPLE_IDP_USER_<LABEL>_EMAIL              - "email" claim (default: <USERNAME>@localhost)
@@ -2708,7 +2708,7 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 	for label := range labels {
 		username := envOr(lookupEnv, prefix+label+"_USERNAME", "")
 		password := envOr(lookupEnv, prefix+label+"_PASSWORD", "")
-		sub := envOr(lookupEnv, prefix+label+"_SUB", username)
+		sub := envOr(lookupEnv, prefix+label+"_SUB", fmt.Sprintf("%x", sha256.Sum256([]byte(username))))
 		name := envOr(lookupEnv, prefix+label+"_NAME", username)
 		preferredUsername := envOr(lookupEnv, prefix+label+"_PREFERRED_USERNAME", username)
 		email := envOr(lookupEnv, prefix+label+"_EMAIL", username+"@localhost")
@@ -2753,7 +2753,7 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 			groups:            groups,
 			roles:             roles,
 		}
-		slog.LogAttrs(context.Background(), slog.LevelInfo, "registered user", slog.String("label", label), slog.String("username", username))
+		slog.LogAttrs(context.Background(), slog.LevelInfo, "registered user", slog.String("label", label), slog.String("username", username), slog.String("sub", sub))
 	}
 
 	if len(users) == 0 {

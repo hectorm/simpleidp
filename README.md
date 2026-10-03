@@ -61,7 +61,7 @@ Users are configured the same way as clients, with a label prefix.
 | -------------------------------------------- | -------------------------------------------------- |
 | `SIMPLE_IDP_USER_<LABEL>_USERNAME`           | Login username (required)                          |
 | `SIMPLE_IDP_USER_<LABEL>_PASSWORD`           | Login password (required)                          |
-| `SIMPLE_IDP_USER_<LABEL>_SUB`                | `sub` claim (default: `<USERNAME>`)                |
+| `SIMPLE_IDP_USER_<LABEL>_SUB`                | `sub` claim (default: hex SHA-256 of `<USERNAME>`) |
 | `SIMPLE_IDP_USER_<LABEL>_NAME`               | `name` claim (default: `<USERNAME>`)               |
 | `SIMPLE_IDP_USER_<LABEL>_PREFERRED_USERNAME` | `preferred_username` claim (default: `<USERNAME>`) |
 | `SIMPLE_IDP_USER_<LABEL>_EMAIL`              | `email` claim (default: `<USERNAME>@localhost`)    |
