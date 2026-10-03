@@ -5,7 +5,9 @@ package simpleidp
 
 import (
 	"slices"
+	"strings"
 	"testing"
+	"time"
 )
 
 func testJWTAccessTokenHeader(t *testing.T) {
@@ -36,7 +38,7 @@ func testJWTAccessTokenDataStructure(t *testing.T) {
 	if claims.Iss != provider.issuer || claims.Sub != testSubject || claims.Aud == "" || claims.ClientID != request.ClientID {
 		t.Fatalf("unexpected access token claims: %#v", claims)
 	}
-	if claims.Jti == "" || claims.Exp-claims.Iat != int64(token.ExpiresIn) {
+	if claims.Jti == "" || claims.Iat <= 0 || claims.Iat > time.Now().Unix() || claims.Exp <= time.Now().Unix() || claims.Exp-claims.Iat != int64(token.ExpiresIn) {
 		t.Fatalf("unexpected access token metadata: %#v", claims)
 	}
 }
@@ -44,32 +46,33 @@ func testJWTAccessTokenDataStructure(t *testing.T) {
 func testJWTAccessTokenIdentityClaims(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 
-	t.Run("includes identity claims for the granted scopes", func(t *testing.T) {
-		request := newDefaultConfidentialAuthorizationRequest("jwt-access-token-identity-claims")
-		token := authorizeAndExchange(t, provider, request, tokenRequest{
-			ClientID:     request.ClientID,
-			ClientSecret: webClientSecret,
-			CodeVerifier: request.Verifier,
+	profileClaims := map[string]any{
+		"name": testName, "preferred_username": testPreferredUsername,
+		"profile": testProfile, "picture": testPicture, "locale": testLocale,
+	}
+	emailClaims := map[string]any{"email": testEmail, "email_verified": true}
+	for _, scope := range []string{"openid", "openid profile", "openid email", "openid profile email"} {
+		t.Run(scope, func(t *testing.T) {
+			request := newDefaultConfidentialAuthorizationRequest("jwt-access-token-identity-" + scope)
+			request.Scope = scope
+			token := authorizeAndExchange(t, provider, request, tokenRequest{
+				ClientID:     request.ClientID,
+				ClientSecret: webClientSecret,
+				CodeVerifier: request.Verifier,
+			})
+			_ = verifyAccessToken(t, provider, token.AccessToken)
+			claims := decodeJWTClaims(t, token.AccessToken)
+			for scopeName, expected := range map[string]map[string]any{"profile": profileClaims, "email": emailClaims} {
+				granted := slices.Contains(strings.Fields(scope), scopeName)
+				for name, want := range expected {
+					value, present := claims[name]
+					if present != granted || (granted && value != want) {
+						t.Fatalf("claim %s for scope %q: got %#v (present=%t), want %#v (present=%t)", name, scope, value, present, want, granted)
+					}
+				}
+			}
 		})
-
-		if claims := verifyAccessToken(t, provider, token.AccessToken); claims.Name != testName || claims.Email != testEmail {
-			t.Fatalf("unexpected identity claims: %#v", claims)
-		}
-	})
-
-	t.Run("omits identity claims for scopes that were not granted", func(t *testing.T) {
-		request := newDefaultConfidentialAuthorizationRequest("jwt-access-token-no-identity-claims")
-		request.Scope = "openid"
-		token := authorizeAndExchange(t, provider, request, tokenRequest{
-			ClientID:     request.ClientID,
-			ClientSecret: webClientSecret,
-			CodeVerifier: request.Verifier,
-		})
-
-		if claims := verifyAccessToken(t, provider, token.AccessToken); claims.Name != "" || claims.Email != "" {
-			t.Fatalf("unexpected identity claims: %#v", claims)
-		}
-	})
+	}
 }
 
 func testJWTAccessTokenAuthorizationClaims(t *testing.T) {
@@ -87,18 +90,38 @@ func testJWTAccessTokenAuthorizationClaims(t *testing.T) {
 	}
 }
 
-func testJWTAccessTokenGroupsClaim(t *testing.T) {
-	provider := startProvider(t, defaultProviderConfig())
-	request := newDefaultConfidentialAuthorizationRequest("jwt-access-token-groups")
-	request.Scope = "openid groups"
-	token := authorizeAndExchange(t, provider, request, tokenRequest{
-		ClientID:     request.ClientID,
-		ClientSecret: webClientSecret,
-		CodeVerifier: request.Verifier,
-	})
+func testJWTAccessTokenGroupsAndRolesClaims(t *testing.T) {
+	config := defaultProviderConfig()
+	roles := []string{"reader", "operator"}
+	config.Users[0].Roles = roles
+	provider := startProvider(t, config)
 
-	if claims := verifyAccessToken(t, provider, token.AccessToken); !slices.Equal(claims.Groups, testGroups) {
-		t.Fatalf("groups mismatch: got %#v, want %#v", claims.Groups, testGroups)
+	for _, scope := range []string{"openid", "openid groups", "openid roles", "openid groups roles"} {
+		t.Run(scope, func(t *testing.T) {
+			request := newDefaultConfidentialAuthorizationRequest("jwt-access-token-authorization-" + scope)
+			request.Scope = scope
+			token := authorizeAndExchange(t, provider, request, tokenRequest{
+				ClientID:     request.ClientID,
+				ClientSecret: webClientSecret,
+				CodeVerifier: request.Verifier,
+			})
+			claims := verifyAccessToken(t, provider, token.AccessToken)
+			raw := decodeJWTClaims(t, token.AccessToken)
+			for _, claim := range []struct {
+				name string
+				got  []string
+				want []string
+			}{
+				{"groups", claims.Groups, testGroups},
+				{"roles", claims.Roles, roles},
+			} {
+				granted := slices.Contains(strings.Fields(scope), claim.name)
+				_, present := raw[claim.name]
+				if present != granted || (granted && !slices.Equal(claim.got, claim.want)) {
+					t.Fatalf("claim %s for scope %q: got %#v (present=%t), want %#v (present=%t)", claim.name, scope, claim.got, present, claim.want, granted)
+				}
+			}
+		})
 	}
 }
 

@@ -140,6 +140,9 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 		if len(user.Groups) > 0 {
 			env = append(env, prefix+"GROUPS="+strings.Join(user.Groups, ","))
 		}
+		if len(user.Roles) > 0 {
+			env = append(env, prefix+"ROLES="+strings.Join(user.Roles, ","))
+		}
 	}
 
 	envMap := make(map[string]string, len(env))

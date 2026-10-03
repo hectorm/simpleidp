@@ -170,11 +170,6 @@ func testOAuth21AuthorizationCodeGrant(t *testing.T) {
 	testAuthorizationCodeFlowSteps(t)
 }
 
-func testOAuth21AuthorizationResponse(t *testing.T) {
-	testSuccessfulAuthenticationResponse(t)
-	testOAuth21AuthorizationErrorResponse(t)
-}
-
 func testOAuth21AuthorizationErrorResponse(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 
@@ -628,12 +623,6 @@ func testOAuth21DontPassBearerTokensInPageURLs(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
 	}
-}
-
-func testOAuth21SummaryOfRecommendations(t *testing.T) {
-	testOAuth21DontStoreBearerTokensInHTTPCookies(t)
-	testOAuth21IssueShortLivedBearerTokens(t)
-	testOAuth21DontPassBearerTokensInPageURLs(t)
 }
 
 func testOAuth21ImpersonationOfNativeApps(t *testing.T) {
@@ -1115,6 +1104,8 @@ func testOAuth21RedirectURIParameterInTokenRequest(t *testing.T) {
 	})
 
 	t.Run("enforces redirect_uri when clients still send it", func(t *testing.T) {
+		request := newDefaultConfidentialAuthorizationRequest("oauth21-redirect-uri-token-mismatch")
+		authorization := authorizeAndLogin(t, provider, request)
 		errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
 			ClientID:     request.ClientID,
 			ClientSecret: webClientSecret,
@@ -1125,6 +1116,13 @@ func testOAuth21RedirectURIParameterInTokenRequest(t *testing.T) {
 		if errResp.Error != "invalid_grant" {
 			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_grant")
 		}
+		_ = exchangeAuthorizationCode(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         authorization.Code,
+			RedirectURI:  request.RedirectURI,
+			CodeVerifier: request.Verifier,
+		})
 	})
 }
 

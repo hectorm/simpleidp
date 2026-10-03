@@ -4,8 +4,6 @@ package simpleidp
 // OIDC Back-Channel Logout 1.0: https://openid.net/specs/openid-connect-backchannel-1_0.html
 
 import (
-	"encoding/base64"
-	"encoding/json/v2"
 	"net/http"
 	"net/url"
 	"slices"
@@ -769,11 +767,12 @@ func testBackChannelLogoutToken(t *testing.T) {
 		if claims.Aud != webClientID {
 			t.Fatalf("aud mismatch: got %q, want %q", claims.Aud, webClientID)
 		}
-		if claims.Iat == 0 {
-			t.Fatal("iat must be present")
+		now := time.Now().Unix()
+		if claims.Iat <= 0 || claims.Iat > now {
+			t.Fatalf("iat must identify an issuance time at or before now, got %d", claims.Iat)
 		}
-		if claims.Exp == 0 {
-			t.Fatal("exp must be present")
+		if claims.Exp <= now {
+			t.Fatalf("exp must be in the future, got %d", claims.Exp)
 		}
 		if claims.Jti == "" {
 			t.Fatal("jti must be present")
@@ -781,8 +780,8 @@ func testBackChannelLogoutToken(t *testing.T) {
 		if claims.Events == nil {
 			t.Fatal("events claim must be present")
 		}
-		if _, ok := claims.Events["http://schemas.openid.net/event/backchannel-logout"]; !ok {
-			t.Fatalf("events claim missing backchannel-logout member: %#v", claims.Events)
+		if event, ok := claims.Events["http://schemas.openid.net/event/backchannel-logout"].(map[string]any); !ok || event == nil {
+			t.Fatalf("events claim must contain a backchannel-logout JSON object: %#v", claims.Events)
 		}
 	})
 
@@ -812,10 +811,7 @@ func testBackChannelLogoutToken(t *testing.T) {
 			t.Fatalf("expected 1 backchannel logout request, got %d", len(requests))
 		}
 
-		parts := strings.Split(requests[0].rawToken, ".")
-		payload, _ := base64.RawURLEncoding.DecodeString(parts[1])
-		var raw map[string]any
-		_ = json.Unmarshal(payload, &raw)
+		raw := decodeJWTClaims(t, requests[0].rawToken)
 		if _, hasNonce := raw["nonce"]; hasNonce {
 			t.Fatal("logout token must not contain a nonce claim")
 		}
@@ -1110,7 +1106,7 @@ func testBackChannelLogoutSecurity(t *testing.T) {
 		}
 	})
 
-	t.Run("logout token exp is within a reasonable window", func(t *testing.T) {
+	t.Run("logout token lifetime follows the recommended two-minute limit", func(t *testing.T) {
 		receiver, receiverURL := startBackchannelLogoutReceiver(t)
 		provider := startProvider(t, backchannelProviderConfig(receiverURL, false))
 		performLogoutWithBackchannel(t, provider)
@@ -1118,8 +1114,8 @@ func testBackChannelLogoutSecurity(t *testing.T) {
 		requests := receiver.receivedRequests()
 		claims := decodeLogoutToken(t, requests[0].rawToken)
 		window := claims.Exp - claims.Iat
-		if window <= 0 || window > 300 {
-			t.Fatalf("exp-iat window should be positive and at most 300s, got %d", window)
+		if window <= 0 || window > 120 {
+			t.Fatalf("exp-iat window should be positive and at most 120s, got %d", window)
 		}
 	})
 

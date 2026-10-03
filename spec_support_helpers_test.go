@@ -60,6 +60,24 @@ func decodeJWTHeader(t *testing.T, token string) jwtHeader {
 	return header
 }
 
+func decodeJWTClaims(t *testing.T, token string) map[string]any {
+	t.Helper()
+
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("invalid JWT format: %q", token)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("failed to decode JWT claims: %v", err)
+	}
+	claims := decodeJSONMap(t, payload)
+	if claims == nil {
+		t.Fatal("JWT claims must be a JSON object")
+	}
+	return claims
+}
+
 func tamperJWTSignature(t *testing.T, token string) string {
 	t.Helper()
 

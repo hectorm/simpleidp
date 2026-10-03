@@ -936,7 +936,7 @@ func testTokenRequestValidation(t *testing.T) {
 			ClientID:     otherClientID,
 			ClientSecret: otherClientSecret,
 			Code:         authorization.Code,
-			RedirectURI:  otherClientRedirect,
+			RedirectURI:  request.RedirectURI,
 			CodeVerifier: request.Verifier,
 		}), http.StatusBadRequest)
 		if errResp.Error != "invalid_grant" {

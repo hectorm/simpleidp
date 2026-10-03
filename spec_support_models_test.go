@@ -69,6 +69,7 @@ type userConfig struct {
 	Picture           string
 	Locale            string
 	Groups            []string
+	Roles             []string
 }
 
 type authorizationRequest struct {
@@ -212,6 +213,7 @@ type accessTokenClaims struct {
 	Email    string   `json:"email"`
 	Name     string   `json:"name"`
 	Groups   []string `json:"groups"`
+	Roles    []string `json:"roles"`
 }
 
 type logoutTokenClaims struct {
