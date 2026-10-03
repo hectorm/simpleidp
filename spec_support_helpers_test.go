@@ -155,7 +155,7 @@ func expectResubmitForm(t *testing.T, resp *http.Response, params url.Values) []
 		t.Fatalf("resubmitted parameters mismatch: got %q, want %q", got, params.Encode())
 	}
 	nonce := regexp.MustCompile(`script-src 'nonce-([^']+)'`).FindStringSubmatch(resp.Header.Get("Content-Security-Policy"))
-	if nonce == nil || !strings.Contains(string(body), `<script nonce="`+nonce[1]+`">document.forms[0].submit()</script>`) {
+	if nonce == nil || !strings.Contains(string(body), `<script nonce="`+nonce[1]+`">HTMLFormElement.prototype.submit.call(document.forms[0])</script>`) {
 		t.Fatalf("expected a nonce-allowed auto-submit script, got CSP %q; body=%s", resp.Header.Get("Content-Security-Policy"), body)
 	}
 	return body

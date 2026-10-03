@@ -110,6 +110,12 @@ func testAuthenticationRequest(t *testing.T) {
 		}
 		_ = expectAuthorizationCodeRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
 	})
+
+	t.Run("auto-submits cross-site POST authorization requests whose parameters shadow form methods", func(t *testing.T) {
+		params := authorizeParams(newDefaultConfidentialAuthorizationRequest("auth-request-cross-site-shadowing"))
+		params.Set("submit", "shadowed")
+		_ = expectResubmitForm(t, provider.postCrossSite(t, provider.endpoint("/authorize"), params), params)
+	})
 }
 
 func testAuthenticationRequestValidation(t *testing.T) {

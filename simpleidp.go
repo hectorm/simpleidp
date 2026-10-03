@@ -1236,7 +1236,7 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 		{{- end}}
 	</main>
 	{{- if .AutoSubmit}}
-	<script nonce="{{.Nonce}}">document.forms[0].submit()</script>
+	<script nonce="{{.Nonce}}">HTMLFormElement.prototype.submit.call(document.forms[0])</script>
 	{{- end}}
 </body>
 </html>`))
