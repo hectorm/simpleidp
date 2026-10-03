@@ -2757,7 +2757,7 @@ func loadOrGenerateKey(lookupEnv func(string) string, readFile func(string) ([]b
 		return parseRSAPKCS8(block.Bytes, path)
 	}
 
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := rsa.GenerateKey(rand.Reader, 3072)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate RSA key: %w", err)
 	}

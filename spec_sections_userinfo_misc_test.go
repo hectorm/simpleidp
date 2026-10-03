@@ -683,6 +683,18 @@ func testSigning(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("generates a 3072-bit RSA signing key when none is configured", func(t *testing.T) {
+		key, err := loadOrGenerateKey(func(string) string { return "" }, func(name string) ([]byte, error) {
+			return nil, fmt.Errorf("unexpected key file read: %s", name)
+		})
+		if err != nil {
+			t.Fatalf("failed to generate RSA key: %v", err)
+		}
+		if bits := key.N.BitLen(); bits != 3072 {
+			t.Fatalf("generated key size mismatch: got %d, want %d", bits, 3072)
+		}
+	})
 }
 
 func testProfilePage(t *testing.T) {
