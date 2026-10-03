@@ -3,15 +3,20 @@
 //
 // Configuration is entirely through environment variables:
 //
-// SIMPLE_IDP_LISTEN       - listen address (default ":8227")
-// SIMPLE_IDP_ISSUER       - issuer URL as seen by clients (required)
-// SIMPLE_IDP_TITLE        - login page title (default: "Simple IdP")
-// SIMPLE_IDP_ACCENT_COLOR - accent color for the pages (default: "oklch(49% 0.19 264)")
-// SIMPLE_IDP_FAVICON      - favicon URL or data URI (default: blank icon)
-// SIMPLE_IDP_EDIT_PROFILE - let users edit their profile, not persisted (default: "false")
-// SIMPLE_IDP_KEY_ID       - JWKS key ID (default: "simple-idp")
-// SIMPLE_IDP_KEY_FILE     - PEM file for PKCS8 RSA private key; generated in memory if empty
-// SIMPLE_IDP_KEY_B64      - base64-encoded PKCS8 RSA private key (alternative to KEY_FILE)
+// SIMPLE_IDP_LISTEN                 - listen address (default ":8227")
+// SIMPLE_IDP_ISSUER                 - issuer URL as seen by clients (required)
+// SIMPLE_IDP_TITLE                  - login page title (default: "Simple IdP")
+// SIMPLE_IDP_ACCENT_COLOR           - accent color for the pages (default: "oklch(49% 0.19 264)")
+// SIMPLE_IDP_FAVICON                - favicon URL or data URI (default: blank icon)
+// SIMPLE_IDP_EDIT_PROFILE           - let users edit their profile, not persisted (default: "false")
+// SIMPLE_IDP_SESSION_IDLE_TTL       - session idle timeout (default: "30m")
+// SIMPLE_IDP_SESSION_MAX_TTL        - session maximum lifetime (default: "10h")
+// SIMPLE_IDP_ACCESS_TOKEN_TTL       - access and ID token lifetime (default: "5m")
+// SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL - refresh token idle timeout (default: "30m")
+// SIMPLE_IDP_REFRESH_TOKEN_MAX_TTL  - refresh token maximum lifetime (default: "10h")
+// SIMPLE_IDP_KEY_ID                 - JWKS key ID (default: "simple-idp")
+// SIMPLE_IDP_KEY_FILE               - PEM file for PKCS8 RSA private key; generated in memory if empty
+// SIMPLE_IDP_KEY_B64                - base64-encoded PKCS8 RSA private key (alternative to KEY_FILE)
 //
 // Clients are configured with a label prefix (the label is arbitrary, used only for grouping):
 //
@@ -88,11 +93,6 @@ func New(environ []string, lookupEnv func(string) string, readFile func(string) 
 const (
 	codeTTL                      = time.Minute
 	loginActionTTL               = 5 * time.Minute
-	sessionIdleTTL               = 30 * time.Minute
-	sessionMaxTTL                = 10 * time.Hour
-	accessTokenTTL               = 5 * time.Minute
-	refreshTokenIdleTTL          = 30 * time.Minute
-	refreshTokenMaxTTL           = 10 * time.Hour
 	maxFormBodyBytes             = 1 << 20
 	sessionCookieBaseName        = "simple_idp_session"
 	preAuthSessionCookieBaseName = "simple_idp_preauth_session"
@@ -191,22 +191,27 @@ type authorizeRequest struct {
 }
 
 type identityProvider struct {
-	issuer        string
-	base          string
-	title         string
-	accentColor   template.CSS
-	favicon       template.URL
-	editProfile   bool
-	keyID         string
-	privKey       *rsa.PrivateKey
-	csrfKey       []byte
-	clients       map[string]client
-	users         map[string]user
-	sessions      map[string]session
-	accessTokens  map[string]accessToken
-	refreshTokens map[string]refreshToken
-	pendingCodes  map[string]pendingCode
-	mu            sync.Mutex
+	issuer              string
+	base                string
+	title               string
+	accentColor         template.CSS
+	favicon             template.URL
+	editProfile         bool
+	sessionIdleTTL      time.Duration
+	sessionMaxTTL       time.Duration
+	accessTokenTTL      time.Duration
+	refreshTokenIdleTTL time.Duration
+	refreshTokenMaxTTL  time.Duration
+	keyID               string
+	privKey             *rsa.PrivateKey
+	csrfKey             []byte
+	clients             map[string]client
+	users               map[string]user
+	sessions            map[string]session
+	accessTokens        map[string]accessToken
+	refreshTokens       map[string]refreshToken
+	pendingCodes        map[string]pendingCode
+	mu                  sync.Mutex
 }
 
 // -------------------------------------------------------------------------- //
@@ -237,6 +242,26 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 	accentColor := template.CSS(envOr(lookupEnv, "SIMPLE_IDP_ACCENT_COLOR", "oklch(49% 0.19 264)")) // #nosec G203
 	favicon := template.URL(envOr(lookupEnv, "SIMPLE_IDP_FAVICON", ""))                             // #nosec G203
 	editProfile := lookupEnv("SIMPLE_IDP_EDIT_PROFILE") == "true"
+	sessionIdleTTL, err := envDuration(lookupEnv, "SIMPLE_IDP_SESSION_IDLE_TTL", 30*time.Minute)
+	if err != nil {
+		return "", nil, err
+	}
+	sessionMaxTTL, err := envDuration(lookupEnv, "SIMPLE_IDP_SESSION_MAX_TTL", 10*time.Hour)
+	if err != nil {
+		return "", nil, err
+	}
+	accessTokenTTL, err := envDuration(lookupEnv, "SIMPLE_IDP_ACCESS_TOKEN_TTL", 5*time.Minute)
+	if err != nil {
+		return "", nil, err
+	}
+	refreshTokenIdleTTL, err := envDuration(lookupEnv, "SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL", 30*time.Minute)
+	if err != nil {
+		return "", nil, err
+	}
+	refreshTokenMaxTTL, err := envDuration(lookupEnv, "SIMPLE_IDP_REFRESH_TOKEN_MAX_TTL", 10*time.Hour)
+	if err != nil {
+		return "", nil, err
+	}
 	keyID := envOr(lookupEnv, "SIMPLE_IDP_KEY_ID", "simple-idp")
 	privKey, err := loadOrGenerateKey(lookupEnv, readFile)
 	if err != nil {
@@ -249,21 +274,26 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 	}
 
 	return listen, &identityProvider{
-		issuer:        issuer,
-		base:          issuerURL.Path,
-		title:         title,
-		accentColor:   accentColor,
-		favicon:       favicon,
-		editProfile:   editProfile,
-		keyID:         keyID,
-		privKey:       privKey,
-		csrfKey:       csrfKey,
-		clients:       clients,
-		users:         users,
-		sessions:      map[string]session{},
-		accessTokens:  map[string]accessToken{},
-		refreshTokens: map[string]refreshToken{},
-		pendingCodes:  map[string]pendingCode{},
+		issuer:              issuer,
+		base:                issuerURL.Path,
+		title:               title,
+		accentColor:         accentColor,
+		favicon:             favicon,
+		editProfile:         editProfile,
+		sessionIdleTTL:      sessionIdleTTL,
+		sessionMaxTTL:       sessionMaxTTL,
+		accessTokenTTL:      accessTokenTTL,
+		refreshTokenIdleTTL: refreshTokenIdleTTL,
+		refreshTokenMaxTTL:  refreshTokenMaxTTL,
+		keyID:               keyID,
+		privKey:             privKey,
+		csrfKey:             csrfKey,
+		clients:             clients,
+		users:               users,
+		sessions:            map[string]session{},
+		accessTokens:        map[string]accessToken{},
+		refreshTokens:       map[string]refreshToken{},
+		pendingCodes:        map[string]pendingCode{},
 	}, nil
 }
 
@@ -526,11 +556,11 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		p.mu.Lock()
 		currentSession, sessionKnown := p.sessions[sessionID]
 		pendingCode, codeKnown := p.pendingCodes[code]
-		if codeKnown && isPendingCodeExpired(pendingCode, now) {
+		if codeKnown && p.isPendingCodeExpired(pendingCode, now) {
 			delete(p.pendingCodes, code)
 			codeKnown = false
 		}
-		if !sessionKnown || isSessionExpired(currentSession, now) || pendingCode.sessionID != sessionID {
+		if !sessionKnown || p.isSessionExpired(currentSession, now) || pendingCode.sessionID != sessionID {
 			codeKnown = false
 		}
 		if codeKnown && (pendingCode.clientID != client.id || pendingCode.redirectURI != *redirectURI || !pendingCode.consumedAt.IsZero() || !pendingCode.consentRequired) {
@@ -795,8 +825,8 @@ func (p *identityProvider) handleIntrospect(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusOK, response)
 	}
 	refreshTokenExpiry := func(token refreshToken) time.Time {
-		idleExpiry := token.createdAt.Add(refreshTokenIdleTTL)
-		maxExpiry := token.sessionStartedAt.Add(refreshTokenMaxTTL)
+		idleExpiry := token.createdAt.Add(p.refreshTokenIdleTTL)
+		maxExpiry := token.sessionStartedAt.Add(p.refreshTokenMaxTTL)
 		if idleExpiry.Before(maxExpiry) {
 			return idleExpiry
 		}
@@ -1553,7 +1583,7 @@ func (p *identityProvider) authorizeUser(w http.ResponseWriter, r *http.Request,
 
 	p.mu.Lock()
 	currentSession, sessionKnown := p.sessions[sessionID]
-	if !sessionKnown || isSessionExpired(currentSession, time.Now()) {
+	if !sessionKnown || p.isSessionExpired(currentSession, time.Now()) {
 		p.mu.Unlock()
 		redirectWithError(w, r, p.issuer, authorization.redirectURI, authorization.state, "login_required", "Authentication required")
 		return
@@ -1592,7 +1622,7 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 	}
 	p.mu.Lock()
 	pendingCode, codeKnown := p.pendingCodes[code]
-	codeExpired := codeKnown && isPendingCodeExpired(pendingCode, time.Now())
+	codeExpired := codeKnown && p.isPendingCodeExpired(pendingCode, time.Now())
 	codePendingConsent := codeKnown && pendingCode.consentRequired
 	codeReused := codeKnown && !pendingCode.consumedAt.IsZero()
 	if codeExpired {
@@ -1650,7 +1680,7 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 	issuedAt := time.Now()
 	p.mu.Lock()
 	currentSession, sessionKnown := p.sessions[pendingCode.sessionID]
-	sessionKnown = sessionKnown && !isSessionExpired(currentSession, time.Now())
+	sessionKnown = sessionKnown && !p.isSessionExpired(currentSession, time.Now())
 	if latest, ok := p.pendingCodes[code]; !ok || !latest.consumedAt.IsZero() || !sessionKnown {
 		p.revokeGrant(code)
 		p.mu.Unlock()
@@ -1665,7 +1695,7 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 		scope:     pendingCode.scope,
 		code:      code,
 		sessionID: pendingCode.sessionID,
-		expiry:    issuedAt.Add(accessTokenTTL),
+		expiry:    issuedAt.Add(p.accessTokenTTL),
 	}
 	p.refreshTokens[refreshTokenValue] = refreshToken{
 		clientID:         client.id,
@@ -1684,7 +1714,7 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 	response := map[string]any{
 		"access_token":  accessTokenValue,
 		"token_type":    "Bearer",
-		"expires_in":    int(accessTokenTTL.Seconds()),
+		"expires_in":    int(p.accessTokenTTL.Seconds()),
 		"scope":         pendingCode.scope,
 		"id_token":      idToken,
 		"refresh_token": refreshTokenValue,
@@ -1702,7 +1732,7 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 	p.mu.Lock()
 	storedRefreshToken, tokenKnown := p.refreshTokens[refreshTokenValue]
 	tokenReused := tokenKnown && !storedRefreshToken.consumedAt.IsZero()
-	tokenExpired := tokenKnown && !tokenReused && isRefreshTokenExpired(storedRefreshToken, time.Now())
+	tokenExpired := tokenKnown && !tokenReused && p.isRefreshTokenExpired(storedRefreshToken, time.Now())
 	if tokenExpired {
 		delete(p.refreshTokens, refreshTokenValue)
 	}
@@ -1764,7 +1794,7 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 		scope:     effectiveAccessScope,
 		code:      storedRefreshToken.code,
 		sessionID: storedRefreshToken.sessionID,
-		expiry:    issuedAt.Add(accessTokenTTL),
+		expiry:    issuedAt.Add(p.accessTokenTTL),
 	}
 	p.refreshTokens[newRefreshTokenValue] = refreshToken{
 		clientID:         client.id,
@@ -1782,7 +1812,7 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 	response := map[string]any{
 		"access_token":  newAccessTokenValue,
 		"token_type":    "Bearer",
-		"expires_in":    int(accessTokenTTL.Seconds()),
+		"expires_in":    int(p.accessTokenTTL.Seconds()),
 		"scope":         effectiveAccessScope,
 		"refresh_token": newRefreshTokenValue,
 	}
@@ -1864,7 +1894,7 @@ func (p *identityProvider) issueSession(w http.ResponseWriter, userLabel string,
 	if sessionID != "" {
 		p.mu.Lock()
 		currentSession, sessionKnown := p.sessions[sessionID]
-		if sessionKnown && currentSession.userLabel == userLabel && !isSessionExpired(currentSession, authenticatedAt) {
+		if sessionKnown && currentSession.userLabel == userLabel && !p.isSessionExpired(currentSession, authenticatedAt) {
 			currentSession.cookieDigest = cookieDigest
 			currentSession.authenticatedAt = authenticatedAt
 			currentSession.lastSeenAt = authenticatedAt
@@ -1937,7 +1967,7 @@ func (p *identityProvider) resumeSession(sessionID string) (session, bool) {
 	now := time.Now()
 	p.mu.Lock()
 	currentSession, ok := p.sessions[sessionID]
-	if ok && isSessionExpired(currentSession, now) {
+	if ok && p.isSessionExpired(currentSession, now) {
 		ok = false
 	}
 	if ok {
@@ -2047,12 +2077,12 @@ func (p *identityProvider) revokeGrant(code string) {
 func (p *identityProvider) removeExpiredState() {
 	now := time.Now()
 	for k, v := range p.sessions {
-		if now.Sub(v.authenticatedAt) > sessionMaxTTL+refreshTokenMaxTTL+accessTokenTTL {
+		if now.Sub(v.authenticatedAt) > p.sessionMaxTTL+p.refreshTokenMaxTTL+p.accessTokenTTL {
 			delete(p.sessions, k)
 		}
 	}
 	for k, v := range p.pendingCodes {
-		if isPendingCodeExpired(v, now) {
+		if p.isPendingCodeExpired(v, now) {
 			delete(p.pendingCodes, k)
 		}
 	}
@@ -2062,9 +2092,9 @@ func (p *identityProvider) removeExpiredState() {
 		}
 	}
 	for k, v := range p.refreshTokens {
-		expired := isRefreshTokenExpired(v, now)
+		expired := p.isRefreshTokenExpired(v, now)
 		if !v.consumedAt.IsZero() {
-			expired = now.Sub(v.sessionStartedAt) > refreshTokenMaxTTL
+			expired = now.Sub(v.sessionStartedAt) > p.refreshTokenMaxTTL
 		}
 		if expired {
 			delete(p.refreshTokens, k)
@@ -2072,17 +2102,17 @@ func (p *identityProvider) removeExpiredState() {
 	}
 }
 
-func isSessionExpired(currentSession session, now time.Time) bool {
-	return now.Sub(currentSession.lastSeenAt) > sessionIdleTTL || now.Sub(currentSession.authenticatedAt) > sessionMaxTTL
+func (p *identityProvider) isSessionExpired(currentSession session, now time.Time) bool {
+	return now.Sub(currentSession.lastSeenAt) > p.sessionIdleTTL || now.Sub(currentSession.authenticatedAt) > p.sessionMaxTTL
 }
 
-func isRefreshTokenExpired(token refreshToken, now time.Time) bool {
-	return now.Sub(token.createdAt) > refreshTokenIdleTTL || now.Sub(token.sessionStartedAt) > refreshTokenMaxTTL
+func (p *identityProvider) isRefreshTokenExpired(token refreshToken, now time.Time) bool {
+	return now.Sub(token.createdAt) > p.refreshTokenIdleTTL || now.Sub(token.sessionStartedAt) > p.refreshTokenMaxTTL
 }
 
-func isPendingCodeExpired(code pendingCode, now time.Time) bool {
+func (p *identityProvider) isPendingCodeExpired(code pendingCode, now time.Time) bool {
 	if !code.consumedAt.IsZero() {
-		return now.Sub(code.consumedAt) > refreshTokenMaxTTL+accessTokenTTL
+		return now.Sub(code.consumedAt) > p.refreshTokenMaxTTL+p.accessTokenTTL
 	}
 	ttl := codeTTL
 	if code.consentRequired {
@@ -2195,7 +2225,7 @@ func (p *identityProvider) mintIDToken(user user, client client, code pendingCod
 		"sub":       user.sub,
 		"aud":       client.id,
 		"iat":       now,
-		"exp":       now + int64(accessTokenTTL.Seconds()),
+		"exp":       now + int64(p.accessTokenTTL.Seconds()),
 		"auth_time": code.authenticatedAt.Unix(),
 		"at_hash":   base64.RawURLEncoding.EncodeToString(atHash[:len(atHash)/2]),
 	}
@@ -2924,4 +2954,16 @@ func envSplit(lookupEnv func(string) string, name, sep string) []string {
 		return strings.Split(v, sep)
 	}
 	return nil
+}
+
+func envDuration(lookupEnv func(string) string, name string, fallback time.Duration) (time.Duration, error) {
+	v := lookupEnv(name)
+	if v == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s: must be a positive duration", name)
+	}
+	return d, nil
 }

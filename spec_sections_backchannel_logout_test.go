@@ -600,7 +600,7 @@ func testBackChannelLogoutRememberingRPs(t *testing.T) {
 				} else {
 					provider.expireAccessToken(t, token.AccessToken)
 					provider.expireRefreshTokenIdle(t, token.RefreshToken)
-					provider.ageConsumedAuthorizationCode(t, authorization.Code, refreshTokenMaxTTL+accessTokenTTL+time.Minute)
+					provider.ageConsumedAuthorizationCode(t, authorization.Code, provider.idp.refreshTokenMaxTTL+provider.idp.accessTokenTTL+time.Minute)
 				}
 
 				body := fetchLogoutForm(t, provider, url.Values{})
@@ -704,9 +704,9 @@ func testBackChannelLogoutRememberingRPs(t *testing.T) {
 					CodeVerifier: request.Verifier,
 				})
 				sessionID := provider.currentSessionID(t)
-				age := sessionMaxTTL + refreshTokenMaxTTL + time.Minute
+				age := provider.idp.sessionMaxTTL + provider.idp.refreshTokenMaxTTL + time.Minute
 				if phase == "all tokens expired" {
-					age += accessTokenTTL
+					age += provider.idp.accessTokenTTL
 					provider.expireAccessToken(t, token.AccessToken)
 				}
 				provider.ageSession(t, age, age)

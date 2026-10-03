@@ -474,7 +474,9 @@ func testOAuth21DontStoreBearerTokensInHTTPCookies(t *testing.T) {
 }
 
 func testOAuth21IssueShortLivedBearerTokens(t *testing.T) {
-	provider := startProvider(t, defaultProviderConfig())
+	config := defaultProviderConfig()
+	config.AccessTokenTTL = 30 * time.Second
+	provider := startProvider(t, config)
 	request := newDefaultConfidentialAuthorizationRequest("oauth21-short-lived-tokens")
 	token := authorizeAndExchange(t, provider, request, tokenRequest{
 		ClientID:     request.ClientID,
@@ -485,8 +487,8 @@ func testOAuth21IssueShortLivedBearerTokens(t *testing.T) {
 	if token.ExpiresIn <= 0 {
 		t.Fatalf("expected positive expires_in, got %d", token.ExpiresIn)
 	}
-	if token.ExpiresIn != int(accessTokenTTL.Seconds()) {
-		t.Fatalf("expires_in mismatch: got %d, want %d", token.ExpiresIn, int(accessTokenTTL.Seconds()))
+	if token.ExpiresIn != int(config.AccessTokenTTL.Seconds()) {
+		t.Fatalf("expires_in mismatch: got %d, want %d", token.ExpiresIn, int(config.AccessTokenTTL.Seconds()))
 	}
 }
 
@@ -728,9 +730,9 @@ func testOAuth21ReuseOfAuthorizationCodes(t *testing.T) {
 					CodeVerifier: request.Verifier,
 				}
 				token := exchangeAuthorizationCode(t, provider, exchange)
-				age := refreshTokenMaxTTL + time.Minute
+				age := provider.idp.refreshTokenMaxTTL + time.Minute
 				if phase == "all tokens expired" {
-					age += accessTokenTTL
+					age += provider.idp.accessTokenTTL
 					provider.expireAccessToken(t, token.AccessToken)
 				}
 				provider.ageConsumedAuthorizationCode(t, authorization.Code, age)

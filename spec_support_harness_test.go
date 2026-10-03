@@ -90,6 +90,9 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 	if config.EditProfile {
 		env = append(env, "SIMPLE_IDP_EDIT_PROFILE=true")
 	}
+	if config.AccessTokenTTL != 0 {
+		env = append(env, "SIMPLE_IDP_ACCESS_TOKEN_TTL="+config.AccessTokenTTL.String())
+	}
 	for _, client := range config.Clients {
 		prefix := "SIMPLE_IDP_CLIENT_" + client.Label + "_"
 		env = append(env,
@@ -779,12 +782,12 @@ func (p *providerProcess) currentSessionID(t *testing.T) string {
 
 func (p *providerProcess) expireSessionMax(t *testing.T) {
 	t.Helper()
-	p.ageSession(t, sessionMaxTTL+time.Minute, 0)
+	p.ageSession(t, p.idp.sessionMaxTTL+time.Minute, 0)
 }
 
 func (p *providerProcess) expireSessionIdle(t *testing.T) {
 	t.Helper()
-	p.ageSession(t, sessionIdleTTL+time.Minute, sessionIdleTTL+time.Minute)
+	p.ageSession(t, p.idp.sessionIdleTTL+time.Minute, p.idp.sessionIdleTTL+time.Minute)
 }
 
 func (p *providerProcess) ageSession(t *testing.T, authenticatedAge, idleAge time.Duration) {
@@ -859,7 +862,7 @@ func (p *providerProcess) expireRefreshTokenMax(t *testing.T, refreshTokenValue 
 	if !ok {
 		t.Fatalf("refresh token %q not found", refreshTokenValue)
 	}
-	storedRefreshToken.sessionStartedAt = time.Now().Add(-refreshTokenMaxTTL - time.Minute)
+	storedRefreshToken.sessionStartedAt = time.Now().Add(-p.idp.refreshTokenMaxTTL - time.Minute)
 	storedRefreshToken.createdAt = time.Now()
 	p.idp.refreshTokens[refreshTokenValue] = storedRefreshToken
 }
@@ -874,7 +877,7 @@ func (p *providerProcess) expireRefreshTokenIdle(t *testing.T, refreshTokenValue
 	if !ok {
 		t.Fatalf("refresh token %q not found", refreshTokenValue)
 	}
-	storedRefreshToken.createdAt = time.Now().Add(-refreshTokenIdleTTL - time.Minute)
+	storedRefreshToken.createdAt = time.Now().Add(-p.idp.refreshTokenIdleTTL - time.Minute)
 	p.idp.refreshTokens[refreshTokenValue] = storedRefreshToken
 }
 

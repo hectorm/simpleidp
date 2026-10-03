@@ -9,6 +9,8 @@ package simpleidp
 // OAuth 2.1 draft 15: https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-15.txt
 // RFC 7662: https://www.rfc-editor.org/rfc/rfc7662.txt
 
+import "time"
+
 const (
 	testUsername          = "alice"
 	testPassword          = "password"
@@ -36,10 +38,11 @@ const (
 var testGroups = []string{"admins", "developers"}
 
 type providerConfig struct {
-	IssuerPath  string
-	EditProfile bool
-	Clients     []clientConfig
-	Users       []userConfig
+	IssuerPath     string
+	EditProfile    bool
+	AccessTokenTTL time.Duration
+	Clients        []clientConfig
+	Users          []userConfig
 }
 
 type clientConfig struct {
