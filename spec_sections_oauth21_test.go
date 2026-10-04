@@ -1090,46 +1090,66 @@ func testOAuth21RegistrationOfNativeAppClients(t *testing.T) {
 }
 
 func testOAuth21TokenEndpointResponse(t *testing.T) {
-	provider := startProvider(t, defaultProviderConfig())
-	request := newDefaultConfidentialAuthorizationRequest("oauth21-token-endpoint-response")
-	authorization := authorizeAndLogin(t, provider, request)
+	for _, grantType := range []string{"authorization_code", "refresh_token", "client_credentials"} {
+		t.Run(grantType, func(t *testing.T) {
+			provider := startProvider(t, defaultProviderConfig())
+			request := newDefaultConfidentialAuthorizationRequest("oauth21-token-endpoint-response-" + grantType)
+			tokenReq := tokenRequest{
+				ClientID:     request.ClientID,
+				ClientSecret: webClientSecret,
+				GrantType:    grantType,
+			}
+			scope := request.Scope
+			switch grantType {
+			case "authorization_code":
+				authorization := authorizeAndLogin(t, provider, request)
+				tokenReq.Code = authorization.Code
+				tokenReq.RedirectURI = request.RedirectURI
+				tokenReq.CodeVerifier = request.Verifier
+			case "refresh_token":
+				original := authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					CodeVerifier: request.Verifier,
+				})
+				tokenReq.RefreshToken = original.RefreshToken
+			case "client_credentials":
+				scope = "orders:read"
+				tokenReq.Scope = scope
+			}
 
-	resp := provider.postToken(t, tokenRequest{
-		ClientID:     request.ClientID,
-		ClientSecret: webClientSecret,
-		Code:         authorization.Code,
-		RedirectURI:  request.RedirectURI,
-		CodeVerifier: request.Verifier,
-	})
-	body := readBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("token status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
-	}
-	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
-		t.Fatalf("content type mismatch: got %q", got)
-	}
-	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
-		t.Fatalf("cache-control mismatch: got %q", got)
-	}
+			resp := provider.postToken(t, tokenReq)
+			body := readBody(t, resp)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("token status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+			}
+			if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+				t.Fatalf("content type mismatch: got %q", got)
+			}
+			if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("cache-control mismatch: got %q", got)
+			}
 
-	var token tokenResponse
-	if err := json.Unmarshal(body, &token); err != nil {
-		t.Fatalf("failed to decode token response: %v\nbody=%s", err, body)
-	}
-	if token.AccessToken == "" {
-		t.Fatalf("expected access token, got %#v", token)
-	}
-	if token.TokenType != "Bearer" {
-		t.Fatalf("token type mismatch: got %q, want %q", token.TokenType, "Bearer")
-	}
-	if token.ExpiresIn <= 0 {
-		t.Fatalf("expected positive expires_in, got %d", token.ExpiresIn)
-	}
-	if token.Scope != "" && token.Scope != request.Scope {
-		t.Fatalf("scope mismatch: got %q, want %q", token.Scope, request.Scope)
-	}
-	if token.RefreshToken == "" {
-		t.Fatalf("expected refresh token, got %#v", token)
+			var token tokenResponse
+			if err := json.Unmarshal(body, &token); err != nil {
+				t.Fatalf("failed to decode token response: %v\nbody=%s", err, body)
+			}
+			if token.AccessToken == "" {
+				t.Fatalf("expected access token, got %#v", token)
+			}
+			if token.TokenType != "Bearer" {
+				t.Fatalf("token type mismatch: got %q, want %q", token.TokenType, "Bearer")
+			}
+			if token.ExpiresIn <= 0 {
+				t.Fatalf("expected positive expires_in, got %d", token.ExpiresIn)
+			}
+			if token.Scope != "" && token.Scope != scope {
+				t.Fatalf("scope mismatch: got %q, want %q", token.Scope, scope)
+			}
+			if grantType == "authorization_code" && token.RefreshToken == "" {
+				t.Fatalf("expected refresh token, got %#v", token)
+			}
+		})
 	}
 }
 
@@ -1218,6 +1238,29 @@ func testOAuth21RedirectURIParameterInTokenRequest(t *testing.T) {
 		body := readBody(t, resp)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("token status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+	})
+
+	t.Run("allows token requests without redirect_uri with several registered URIs", func(t *testing.T) {
+		config := defaultProviderConfig()
+		const secondRedirect = "http://localhost/alt/callback"
+		config.Clients[0].RedirectURL = webClientRedirect + " " + secondRedirect
+		provider := startProvider(t, config)
+		for _, redirectURI := range []string{webClientRedirect, secondRedirect} {
+			t.Run(redirectURI, func(t *testing.T) {
+				request := newDefaultConfidentialAuthorizationRequest("oauth21-omit-token-redirect-uri-multiple")
+				request.RedirectURI = redirectURI
+				authorization := authorizeAndLogin(t, provider, request)
+				token := exchangeAuthorizationCode(t, provider, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					Code:         authorization.Code,
+					CodeVerifier: request.Verifier,
+				})
+				if token.AccessToken == "" {
+					t.Fatalf("expected access token for redirect URI %q, got %#v", redirectURI, token)
+				}
+			})
 		}
 	})
 

@@ -106,6 +106,15 @@ const (
 var (
 	authorizeFormFields  = []string{"username", "password", "code", "confirm", "csrf_token"}
 	endSessionFormFields = []string{"confirm", "csrf_token"}
+	authorizeParamNames  = append([]string{
+		"client_id", "redirect_uri", "response_type", "response_mode", "scope", "state",
+		"nonce", "display", "prompt", "max_age", "ui_locales", "claims_locales",
+		"id_token_hint", "login_hint", "acr_values", "claims", "request", "request_uri", "registration",
+		"code_challenge", "code_challenge_method",
+	}, authorizeFormFields...)
+	tokenParamNames = []string{
+		"grant_type", "client_id", "client_secret", "code", "redirect_uri", "code_verifier", "refresh_token", "scope",
+	}
 )
 
 type client struct {
@@ -606,7 +615,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		redirectWithError(w, r, p.issuer, *redirectURI, state, errCode, errDesc)
 		return
 	}
-	if !hasUniqueParams(params) {
+	if !hasUniqueParams(params, authorizeParamNames...) {
 		redirectWithError(w, r, p.issuer, *redirectURI, state, "invalid_request", "Duplicate parameter")
 		return
 	}
@@ -698,7 +707,7 @@ func (p *identityProvider) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !hasUniqueParams(r.PostForm) {
+	if !hasUniqueParams(r.PostForm, tokenParamNames...) {
 		writeTokenError(w, http.StatusBadRequest, "invalid_request", "Duplicate parameter")
 		return
 	}
@@ -2489,8 +2498,11 @@ func parseClientCredentials(r *http.Request) (clientID, clientSecret string, err
 
 // -------------------------------------------------------------------------- //
 
-func hasUniqueParams(params url.Values) bool {
-	for _, values := range params {
+func hasUniqueParams(params url.Values, names ...string) bool {
+	for name, values := range params {
+		if len(names) != 0 && !slices.Contains(names, name) {
+			continue
+		}
 		if len(values) > 1 {
 			return false
 		}

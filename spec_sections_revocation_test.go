@@ -155,6 +155,62 @@ func testRevocationRequest(t *testing.T) {
 func testRevocationResponse(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 
+	t.Run("revokes public-client tokens using only client_id", func(t *testing.T) {
+		for _, tokenType := range []string{"access_token", "refresh_token"} {
+			t.Run(tokenType, func(t *testing.T) {
+				provider := startProvider(t, defaultProviderConfig())
+				request := authorizationRequest{
+					ClientID:    nativeClientID,
+					RedirectURI: nativeClientRedirect,
+					Scope:       "openid profile",
+					State:       "revoke-public-client-" + tokenType,
+					Verifier:    pkceVerifier("revoke-public-client-" + tokenType),
+				}
+				token := authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
+					CodeVerifier: request.Verifier,
+				})
+				_ = fetchUserInfo(t, provider, token.AccessToken)
+				value := token.AccessToken
+				if tokenType == "refresh_token" {
+					value = token.RefreshToken
+				}
+				if value == "" {
+					t.Fatalf("expected %s, got %#v", tokenType, token)
+				}
+
+				resp := postRevoke(t, provider, revocationRequest{
+					ClientID:      nativeClientID,
+					Token:         value,
+					TokenTypeHint: tokenType,
+				})
+				body := readBody(t, resp)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("revocation status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+				}
+
+				resp = provider.getUserInfoResponse(t, token.AccessToken)
+				body = readBody(t, resp)
+				if resp.StatusCode != http.StatusUnauthorized {
+					t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
+				}
+				if got := resp.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="invalid_token"`) {
+					t.Fatalf("expected invalid_token challenge, got %q", got)
+				}
+				if tokenType == "refresh_token" {
+					errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
+						ClientID:     nativeClientID,
+						GrantType:    "refresh_token",
+						RefreshToken: token.RefreshToken,
+					}), http.StatusBadRequest)
+					if errResp.Error != "invalid_grant" {
+						t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_grant")
+					}
+				}
+			})
+		}
+	})
+
 	t.Run("returns 200 even for unknown tokens", func(t *testing.T) {
 		resp := postRevoke(t, provider, revocationRequest{
 			ClientID:     webClientID,

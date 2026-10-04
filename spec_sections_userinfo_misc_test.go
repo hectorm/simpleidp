@@ -489,6 +489,38 @@ func testNormalClaims(t *testing.T) {
 }
 
 func testClaimStabilityAndUniqueness(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		aliceSub string
+		bobSub   string
+	}{
+		{name: "rejects duplicate configured subjects", aliceSub: testSubject, bobSub: testSubject},
+		{name: "rejects a configured subject matching another user's default subject", bobSub: defaultSubject("ALICE")},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			environ := []string{
+				"SIMPLE_IDP_USER_ALICE_USERNAME=" + testUsername,
+				"SIMPLE_IDP_USER_ALICE_PASSWORD=" + testPassword,
+				"SIMPLE_IDP_USER_ALICE_SUB=" + testCase.aliceSub,
+				"SIMPLE_IDP_USER_BOB_USERNAME=bob",
+				"SIMPLE_IDP_USER_BOB_PASSWORD=hunter2",
+				"SIMPLE_IDP_USER_BOB_SUB=" + testCase.bobSub,
+			}
+			_, err := loadUsers(environ, func(name string) string {
+				for _, item := range environ {
+					key, value, _ := strings.Cut(item, "=")
+					if key == name {
+						return value
+					}
+				}
+				return ""
+			})
+			if err == nil || !strings.Contains(err.Error(), "duplicate sub claim") {
+				t.Fatalf("expected duplicate subject configuration error, got %v", err)
+			}
+		})
+	}
+
 	t.Run("returns a stable subject for the same user", func(t *testing.T) {
 		provider := startProvider(t, defaultProviderConfig())
 		request := newDefaultConfidentialAuthorizationRequest("claim-stability")

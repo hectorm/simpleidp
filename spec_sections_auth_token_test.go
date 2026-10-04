@@ -322,21 +322,52 @@ func testAuthenticationRequestValidation(t *testing.T) {
 		expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "request_uri_not_supported")
 	})
 
-	t.Run("rejects duplicate parameters", func(t *testing.T) {
-		for _, parameter := range []string{"scope", "unknown_parameter"} {
+	t.Run("rejects duplicate recognized parameters", func(t *testing.T) {
+		for _, parameter := range []string{"response_type", "scope", "state", "nonce", "code_challenge", "code_challenge_method", "claims", "ui_locales"} {
 			t.Run(parameter, func(t *testing.T) {
 				request := newDefaultConfidentialAuthorizationRequest("duplicate-" + parameter)
 				params := authorizeParams(request)
-				if parameter == "unknown_parameter" {
+				if !params.Has(parameter) {
 					params.Set(parameter, "ignored")
-					params.Add(parameter, params.Get(parameter))
-				} else {
-					params[parameter] = []string{"openid profile", "openid email"}
 				}
+				params.Add(parameter, params.Get(parameter))
 
 				redirect := expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "invalid_request")
 				if got := redirect.Query().Get("error_description"); !strings.Contains(got, "Duplicate parameter") {
 					t.Fatalf("expected duplicate parameter error, got %q", got)
+				}
+			})
+		}
+	})
+
+	t.Run("ignores repeated unknown parameters", func(t *testing.T) {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			t.Run(method, func(t *testing.T) {
+				provider := startProvider(t, defaultProviderConfig())
+				request := newDefaultConfidentialAuthorizationRequest("unknown-authorize-parameters-" + method)
+				params := authorizeParams(request)
+				params["unknown_parameter"] = []string{"first", "second"}
+
+				var resp *http.Response
+				if method == http.MethodPost {
+					body := expectResubmitForm(t, provider.postAuthorize(t, nil, params), params)
+					resp = submitResubmitForm(t, provider, body)
+				} else {
+					resp = provider.getAuthorize(t, params)
+				}
+				body := readBody(t, resp)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+				}
+				code := expectAuthorizationCodeRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
+				token := exchangeAuthorizationCode(t, provider, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					Code:         code,
+					CodeVerifier: request.Verifier,
+				})
+				if token.AccessToken == "" {
+					t.Fatalf("expected access token, got %#v", token)
 				}
 			})
 		}
@@ -1332,6 +1363,9 @@ func testSuccessfulRefreshResponse(t *testing.T) {
 	}
 
 	refreshedClaims := verifyIDToken(t, provider, refreshed.IDToken)
+	if got, want := refreshedClaims.AtHash, accessTokenHash(refreshed.AccessToken); got != want {
+		t.Fatalf("refreshed at_hash mismatch: got %q, want %q", got, want)
+	}
 	if refreshedClaims.Iss != originalClaims.Iss || refreshedClaims.Sub != originalClaims.Sub || refreshedClaims.Aud != originalClaims.Aud {
 		t.Fatalf("unexpected refreshed id token claims: %#v", refreshedClaims)
 	}
@@ -1591,7 +1625,7 @@ func testRefreshTokenRecommendations(t *testing.T) {
 func testTokenErrorResponse(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 
-	t.Run("returns invalid_request for duplicate parameters", func(t *testing.T) {
+	t.Run("rejects duplicate recognized parameters and ignores repeated unknown parameters", func(t *testing.T) {
 		for _, grantType := range []string{"authorization_code", "refresh_token", "client_credentials"} {
 			t.Run(grantType, func(t *testing.T) {
 				provider := startProvider(t, defaultProviderConfig())
@@ -1599,7 +1633,7 @@ func testTokenErrorResponse(t *testing.T) {
 					"grant_type":        {grantType},
 					"client_id":         {webClientID},
 					"client_secret":     {webClientSecret},
-					"unknown_parameter": {"ignored"},
+					"unknown_parameter": {"first", "second"},
 				}
 				switch grantType {
 				case "authorization_code":
@@ -1621,7 +1655,7 @@ func testTokenErrorResponse(t *testing.T) {
 					form.Set("scope", "orders:read")
 				}
 
-				for _, parameter := range []string{"grant_type", "client_id", "client_secret", "code", "redirect_uri", "code_verifier", "refresh_token", "scope", "unknown_parameter"} {
+				for _, parameter := range []string{"grant_type", "client_id", "client_secret", "code", "redirect_uri", "code_verifier", "refresh_token", "scope"} {
 					if !form.Has(parameter) {
 						continue
 					}
