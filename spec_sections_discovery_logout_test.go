@@ -93,15 +93,20 @@ func testProviderConfigurationRequest(t *testing.T) {
 	})
 
 	t.Run("supports issuer paths when forming the well-known path", func(t *testing.T) {
-		config := defaultProviderConfig()
-		config.IssuerPath = "/issuer1"
-		provider := startProvider(t, config)
-		resp, body := fetchDiscoveryResponse(t, provider)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("discovery status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
-		}
-		if provider.issuer != provider.endpoint("") {
-			t.Fatalf("issuer mismatch: got %q, want %q", provider.issuer, provider.endpoint(""))
+		for _, issuerPath := range []string{"/issuer1", "/tenant/issuer/"} {
+			t.Run(issuerPath, func(t *testing.T) {
+				config := defaultProviderConfig()
+				config.IssuerPath = issuerPath
+				provider := startProvider(t, config)
+				resp, body := fetchDiscoveryResponse(t, provider)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("discovery status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+				}
+				issuer := decodeJSONMap(t, body)["issuer"]
+				if issuer != provider.issuer || !strings.HasSuffix(provider.issuer, strings.TrimRight(issuerPath, "/")) {
+					t.Fatalf("discovery did not retain the configured issuer path %q: got %#v", issuerPath, issuer)
+				}
+			})
 		}
 	})
 }
@@ -152,19 +157,19 @@ func testProviderConfigurationValidation(t *testing.T) {
 		t.Fatalf("id token issuer mismatch: got %q, want %q", claims.Iss, discovery.Issuer)
 	}
 
-	t.Run("detects issuer mismatches against discovered configuration", func(t *testing.T) {
-		otherProvider := startProvider(t, defaultProviderConfig())
-		request := newDefaultConfidentialAuthorizationRequest("provider-config-validation-mismatch")
-		otherToken := authorizeAndExchange(t, otherProvider, request, tokenRequest{
-			ClientID:     request.ClientID,
-			ClientSecret: webClientSecret,
-			CodeVerifier: request.Verifier,
-		})
-		otherClaims := verifyIDToken(t, otherProvider, otherToken.IDToken)
-		if otherClaims.Iss == discovery.Issuer {
-			t.Fatalf("expected discovery issuer %q to differ from token issuer %q", discovery.Issuer, otherClaims.Iss)
+	for name, endpoint := range map[string]string{
+		"authorization_endpoint": discovery.AuthorizationEndpoint,
+		"token_endpoint":         discovery.TokenEndpoint,
+		"userinfo_endpoint":      discovery.UserInfoEndpoint,
+		"jwks_uri":               discovery.JWKSURI,
+	} {
+		if !strings.HasPrefix(endpoint, provider.issuer+"/") {
+			t.Fatalf("%s did not retain the issuer path: got %q", name, endpoint)
 		}
-	})
+	}
+	if accessClaims := verifyAccessToken(t, provider, token.AccessToken); accessClaims.Iss != discovery.Issuer {
+		t.Fatalf("access token issuer mismatch: got %q, want %q", accessClaims.Iss, discovery.Issuer)
+	}
 }
 
 func testRPInitiatedLogout(t *testing.T) {
@@ -367,18 +372,29 @@ func testLogoutClientRegistrationMetadata(t *testing.T) {
 		assertRedirectTarget(t, redirect, webClientPostLogoutRedirect)
 	})
 
-	t.Run("rejects unregistered post-logout redirect uris", func(t *testing.T) {
-		req, err := http.NewRequest(http.MethodGet, provider.endpoint("/end-session")+"?"+url.Values{
-			"client_id":                {webClientID},
-			"post_logout_redirect_uri": {"http://127.0.0.1/unregistered/logout"},
-		}.Encode(), nil)
-		if err != nil {
-			t.Fatalf("failed to create logout request: %v", err)
-		}
+	t.Run("requires exact matching of registered post-logout redirect uris", func(t *testing.T) {
+		for _, redirectURI := range []string{
+			"http://127.0.0.1/unregistered/logout",
+			"HTTP://127.0.0.1/logout/callback",
+			"http://127.0.0.1:49170/logout/callback",
+			"http://127.0.0.1/logout/%63allback",
+			webClientPostLogoutRedirect + "?tenant=alpha",
+			webClientPostLogoutRedirect + "#fragment",
+		} {
+			t.Run(redirectURI, func(t *testing.T) {
+				req, err := http.NewRequest(http.MethodGet, provider.endpoint("/end-session")+"?"+url.Values{
+					"client_id":                {webClientID},
+					"post_logout_redirect_uri": {redirectURI},
+				}.Encode(), nil)
+				if err != nil {
+					t.Fatalf("failed to create logout request: %v", err)
+				}
 
-		resp := provider.do(t, provider.redirectless, req)
-		body := readBody(t, resp)
-		expectNoLogoutRedirect(t, resp, body)
+				resp := provider.do(t, provider.redirectless, req)
+				body := readBody(t, resp)
+				expectRejectedLogoutRequest(t, resp, body)
+			})
+		}
 	})
 }
 
@@ -395,7 +411,7 @@ func testLogoutValidationAndErrorHandling(t *testing.T) {
 
 		resp := provider.do(t, provider.redirectless, req)
 		body := readBody(t, resp)
-		expectNoLogoutRedirect(t, resp, body)
+		expectRejectedLogoutRequest(t, resp, body)
 	})
 
 	t.Run("rejects id token hints with invalid signatures", func(t *testing.T) {
@@ -415,7 +431,7 @@ func testLogoutValidationAndErrorHandling(t *testing.T) {
 
 		resp := provider.do(t, provider.redirectless, req)
 		body := readBody(t, resp)
-		expectNoLogoutRedirect(t, resp, body)
+		expectRejectedLogoutRequest(t, resp, body)
 	})
 
 	t.Run("rejects access and logout tokens as id token hints", func(t *testing.T) {
@@ -451,7 +467,7 @@ func testLogoutValidationAndErrorHandling(t *testing.T) {
 				if resp.StatusCode != http.StatusBadRequest {
 					t.Fatalf("logout status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
 				}
-				expectNoLogoutRedirect(t, resp, body)
+				expectRejectedLogoutRequest(t, resp, body)
 			})
 		}
 	})
@@ -468,7 +484,7 @@ func testLogoutValidationAndErrorHandling(t *testing.T) {
 
 		resp := fixture.provider.do(t, fixture.provider.redirectless, req)
 		body := readBody(t, resp)
-		expectNoLogoutRedirect(t, resp, body)
+		expectRejectedLogoutRequest(t, resp, body)
 	})
 
 	t.Run("does not redirect id token hints from a different issuer", func(t *testing.T) {
@@ -491,10 +507,10 @@ func testLogoutValidationAndErrorHandling(t *testing.T) {
 
 		resp := browser.do(t, browser.redirectless, req)
 		body := readBody(t, resp)
-		expectNoLogoutRedirect(t, resp, body)
+		expectRejectedLogoutRequest(t, resp, body)
 	})
 
-	t.Run("does not redirect post-logout uris without proof of client identity", func(t *testing.T) {
+	t.Run("rejects post-logout uris without a client identifier or id token hint", func(t *testing.T) {
 		req, err := http.NewRequest(http.MethodGet, provider.endpoint("/end-session")+"?"+url.Values{
 			"post_logout_redirect_uri": {webClientPostLogoutRedirect},
 		}.Encode(), nil)
@@ -504,7 +520,7 @@ func testLogoutValidationAndErrorHandling(t *testing.T) {
 
 		resp := provider.do(t, provider.redirectless, req)
 		body := readBody(t, resp)
-		expectNoLogoutRedirect(t, resp, body)
+		expectRejectedLogoutRequest(t, resp, body)
 	})
 
 	t.Run("rejects duplicate logout parameters", func(t *testing.T) {
@@ -517,15 +533,15 @@ func testLogoutValidationAndErrorHandling(t *testing.T) {
 
 		resp := provider.do(t, provider.redirectless, req)
 		body := readBody(t, resp)
-		expectNoLogoutRedirect(t, resp, body)
+		expectRejectedLogoutRequest(t, resp, body)
 	})
 }
 
-func expectNoLogoutRedirect(t *testing.T, resp *http.Response, body []byte) {
+func expectRejectedLogoutRequest(t *testing.T, resp *http.Response, body []byte) {
 	t.Helper()
 
-	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
-		t.Fatalf("expected a non-redirecting logout response, got %s; body=%s", resp.Status, body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected a rejected logout request, got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
 	}
 	if location := resp.Header.Get("Location"); location != "" {
 		t.Fatalf("did not expect logout redirect, got %q", location)
@@ -533,6 +549,36 @@ func expectNoLogoutRedirect(t *testing.T, resp *http.Response, body []byte) {
 }
 
 func testLogoutSecurityConsiderations(t *testing.T) {
+	t.Run("requires confirmation and preserves the session when logout is canceled", func(t *testing.T) {
+		fixture := prepareRPInitiatedLogout(t)
+		_ = fetchUserInfo(t, fixture.provider, fixture.token.AccessToken)
+		resp := submitConsentForm(t, fixture.provider, fixture.formBody, "no")
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `data-testid="page-logout-canceled"`) {
+			t.Fatalf("expected canceled logout, got %s; body=%s", resp.Status, body)
+		}
+		if got := resp.Header.Get("Location"); got != "" {
+			t.Fatalf("canceled logout must not redirect, got %q", got)
+		}
+		_ = fetchUserInfo(t, fixture.provider, fixture.token.AccessToken)
+		request := newDefaultConfidentialAuthorizationRequest("logout-canceled-session")
+		request.Prompt = "none"
+		expectAuthorizationCodeRedirect(t, fixture.provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, fixture.provider.issuer)
+	})
+
+	t.Run("rejects confirmed RP-initiated logout without CSRF protection", func(t *testing.T) {
+		fixture := prepareRPInitiatedLogout(t)
+		form := extractHiddenInputs(t, fixture.formBody)
+		form.Del("csrf_token")
+		form.Set("confirm", "yes")
+		resp := fixture.provider.postFormURL(t, fixture.formAction, form, "", false)
+		expectRejectedLogoutRequest(t, resp, readBody(t, resp))
+		_ = fetchUserInfo(t, fixture.provider, fixture.token.AccessToken)
+		request := newDefaultConfidentialAuthorizationRequest("logout-missing-csrf-session")
+		request.Prompt = "none"
+		expectAuthorizationCodeRedirect(t, fixture.provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, fixture.provider.issuer)
+	})
+
 	provider := startProvider(t, defaultProviderConfig())
 	verifier := pkceVerifier("logout-security-considerations")
 	authorizeAndExchange(t, provider, authorizationRequest{

@@ -27,6 +27,7 @@ func testJWTAccessTokenHeader(t *testing.T) {
 
 func testJWTAccessTokenDataStructure(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
+	seenTokenIDs := map[string]bool{}
 	for _, grantType := range []string{"authorization_code", "refresh_token", "client_credentials"} {
 		t.Run(grantType, func(t *testing.T) {
 			issuedAfter := time.Now().Unix()
@@ -66,6 +67,15 @@ func testJWTAccessTokenDataStructure(t *testing.T) {
 			now := time.Now().Unix()
 			if claims.Jti == "" || claims.Iat < issuedAfter || claims.Iat > now || claims.Exp <= now || claims.Exp-claims.Iat != int64(token.ExpiresIn) {
 				t.Fatalf("unexpected access token metadata: %#v", claims)
+			}
+			if seenTokenIDs[claims.Jti] {
+				t.Fatalf("duplicate access token jti %q across grants", claims.Jti)
+			}
+			seenTokenIDs[claims.Jti] = true
+			for _, name := range []string{"auth_time", "acr", "amr"} {
+				if _, present := decodeJWTClaims(t, token.AccessToken)[name]; present {
+					t.Fatalf("unexpected optional authentication claim %q in access token", name)
+				}
 			}
 		})
 	}

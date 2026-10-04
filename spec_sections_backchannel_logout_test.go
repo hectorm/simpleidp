@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -978,6 +979,9 @@ func testBackChannelLogoutTokenValidation(t *testing.T) {
 		performLogoutWithBackchannel(t, provider)
 
 		requests := receiver.receivedRequests()
+		if len(requests) != 1 {
+			t.Fatalf("expected 1 backchannel logout request, got %d", len(requests))
+		}
 		claims := verifyLogoutToken(t, provider, requests[0].rawToken)
 		if claims.Sub != testSubject {
 			t.Fatalf("sub mismatch: got %q, want %q", claims.Sub, testSubject)
@@ -990,6 +994,9 @@ func testBackChannelLogoutTokenValidation(t *testing.T) {
 		performLogoutWithBackchannel(t, provider)
 
 		requests := receiver.receivedRequests()
+		if len(requests) != 1 {
+			t.Fatalf("expected 1 backchannel logout request, got %d", len(requests))
+		}
 		claims := verifyLogoutToken(t, provider, requests[0].rawToken)
 		if claims.Aud != webClientID {
 			t.Fatalf("aud mismatch: got %q, want %q", claims.Aud, webClientID)
@@ -1013,11 +1020,30 @@ func testBackChannelLogoutRequest(t *testing.T) {
 		if requests[0].rawToken == "" {
 			t.Fatal("expected logout_token parameter in POST body")
 		}
+		if values := requests[0].form["logout_token"]; len(values) != 1 {
+			t.Fatalf("expected exactly one logout_token form parameter, got %#v", values)
+		}
+	})
+
+	t.Run("retains registered query parameters in back-channel requests", func(t *testing.T) {
+		receiver, receiverURL := startBackchannelLogoutReceiver(t)
+		const query = "tenant=alpha&tag=one&tag=two"
+		provider := startProvider(t, backchannelProviderConfig(receiverURL+"?"+query, false))
+		performLogoutWithBackchannel(t, provider)
+
+		requests := receiver.receivedRequests()
+		if len(requests) != 1 {
+			t.Fatalf("expected 1 backchannel logout request, got %d", len(requests))
+		}
+		if requests[0].rawQuery != query {
+			t.Fatalf("back-channel query mismatch: got %q, want %q", requests[0].rawQuery, query)
+		}
 	})
 }
 
 func testBackChannelLogoutResponse(t *testing.T) {
-	t.Run("treats HTTP 204 No Content as a successful back-channel logout response", func(t *testing.T) {
+	t.Run("completes logout even when the back-channel endpoint returns HTTP 204", func(t *testing.T) {
+		var received atomic.Int64
 		listener, err := listenLocal(t)
 		if err != nil {
 			t.Fatalf("failed to open listener: %v", err)
@@ -1025,6 +1051,7 @@ func testBackChannelLogoutResponse(t *testing.T) {
 		addr := listener.Addr().String()
 		mux := http.NewServeMux()
 		mux.HandleFunc("POST /backchannel-logout", func(w http.ResponseWriter, r *http.Request) {
+			received.Add(1)
 			w.WriteHeader(http.StatusNoContent)
 		})
 		srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -1034,6 +1061,9 @@ func testBackChannelLogoutResponse(t *testing.T) {
 		receiverURL := "http://" + addr + "/backchannel-logout"
 		provider := startProvider(t, backchannelProviderConfig(receiverURL, false))
 		token := performLogoutWithBackchannel(t, provider)
+		if received.Load() != 1 {
+			t.Fatal("expected the RP to receive a back-channel logout request")
+		}
 
 		userInfoResp := provider.getUserInfoResponse(t, token.AccessToken)
 		body := readBody(t, userInfoResp)
@@ -1043,6 +1073,7 @@ func testBackChannelLogoutResponse(t *testing.T) {
 	})
 
 	t.Run("completes logout even when the back-channel endpoint returns HTTP 400", func(t *testing.T) {
+		var received atomic.Int64
 		listener, err := listenLocal(t)
 		if err != nil {
 			t.Fatalf("failed to open listener: %v", err)
@@ -1050,6 +1081,7 @@ func testBackChannelLogoutResponse(t *testing.T) {
 		addr := listener.Addr().String()
 		mux := http.NewServeMux()
 		mux.HandleFunc("POST /backchannel-logout", func(w http.ResponseWriter, r *http.Request) {
+			received.Add(1)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
 		})
 		srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -1059,6 +1091,9 @@ func testBackChannelLogoutResponse(t *testing.T) {
 		receiverURL := "http://" + addr + "/backchannel-logout"
 		provider := startProvider(t, backchannelProviderConfig(receiverURL, false))
 		token := performLogoutWithBackchannel(t, provider)
+		if received.Load() != 1 {
+			t.Fatal("expected the RP to receive a back-channel logout request")
+		}
 
 		userInfoResp := provider.getUserInfoResponse(t, token.AccessToken)
 		body := readBody(t, userInfoResp)
@@ -1076,8 +1111,10 @@ func testBackChannelLogoutResponse(t *testing.T) {
 				}
 				addr := listener.Addr().String()
 				followed := make(chan struct{}, 1)
+				var received atomic.Int64
 				mux := http.NewServeMux()
 				mux.HandleFunc("POST /backchannel-logout", func(w http.ResponseWriter, r *http.Request) {
+					received.Add(1)
 					http.Redirect(w, r, "/redirected", status)
 				})
 				mux.HandleFunc("/redirected", func(w http.ResponseWriter, r *http.Request) {
@@ -1094,6 +1131,9 @@ func testBackChannelLogoutResponse(t *testing.T) {
 				receiverURL := "http://" + addr + "/backchannel-logout"
 				provider := startProvider(t, backchannelProviderConfig(receiverURL, false))
 				token := performLogoutWithBackchannel(t, provider)
+				if received.Load() != 1 {
+					t.Fatal("expected the RP to receive a back-channel logout request")
+				}
 				if len(followed) != 0 {
 					t.Fatalf("back-channel logout followed an HTTP %d redirect", status)
 				}
@@ -1158,6 +1198,9 @@ func testBackChannelLogoutSecurity(t *testing.T) {
 		performLogoutWithBackchannel(t, provider)
 
 		requests := receiver.receivedRequests()
+		if len(requests) != 1 {
+			t.Fatalf("expected 1 backchannel logout request, got %d", len(requests))
+		}
 		claims := decodeLogoutToken(t, requests[0].rawToken)
 		window := claims.Exp - claims.Iat
 		if window <= 0 || window > 120 {

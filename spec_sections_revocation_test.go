@@ -223,9 +223,19 @@ func testRevocationResponse(t *testing.T) {
 		}
 	})
 
-	t.Run("revokes the access token associated with a revoked refresh token", func(t *testing.T) {
+	t.Run("revokes all access tokens of the refresh grant and preserves other grants", func(t *testing.T) {
 		request := newDefaultConfidentialAuthorizationRequest("revoke-cascade-refresh")
 		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+		refreshed := exchangeRefreshToken(t, provider, tokenRequest{
+			ClientID:     webClientID,
+			ClientSecret: webClientSecret,
+			RefreshToken: token.RefreshToken,
+		})
+		otherGrant := authorizeAndExchange(t, provider, request, tokenRequest{
 			ClientID:     request.ClientID,
 			ClientSecret: webClientSecret,
 			CodeVerifier: request.Verifier,
@@ -234,23 +244,30 @@ func testRevocationResponse(t *testing.T) {
 		resp := postRevoke(t, provider, revocationRequest{
 			ClientID:     webClientID,
 			ClientSecret: webClientSecret,
-			Token:        token.RefreshToken,
+			Token:        refreshed.RefreshToken,
 		})
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("revocation status mismatch: got %s, want %d", resp.Status, http.StatusOK)
 		}
 		_ = readBody(t, resp)
 
-		expectInactiveIntrospectionResponse(t, provider.postIntrospect(t, introspectionRequest{
-			ClientID:     webClientID,
-			ClientSecret: webClientSecret,
-			Token:        token.AccessToken,
-		}))
-		expectInactiveIntrospectionResponse(t, provider.postIntrospect(t, introspectionRequest{
-			ClientID:     webClientID,
-			ClientSecret: webClientSecret,
-			Token:        token.RefreshToken,
-		}))
+		for _, value := range []string{token.AccessToken, refreshed.AccessToken, refreshed.RefreshToken} {
+			expectInactiveIntrospectionResponse(t, provider.postIntrospect(t, introspectionRequest{
+				ClientID:     webClientID,
+				ClientSecret: webClientSecret,
+				Token:        value,
+			}))
+		}
+		for _, value := range []string{otherGrant.AccessToken, otherGrant.RefreshToken} {
+			response := introspectToken(t, provider, introspectionRequest{
+				ClientID:     webClientID,
+				ClientSecret: webClientSecret,
+				Token:        value,
+			})
+			if !response.Active {
+				t.Fatal("revoking a refresh grant must preserve other grants for the same client and session")
+			}
+		}
 	})
 }
 
@@ -318,23 +335,29 @@ func testRevocationSecurityConsiderations(t *testing.T) {
 			CodeVerifier: request.Verifier,
 		})
 
-		resp := postRevoke(t, provider, revocationRequest{
-			ClientID:     otherClientID,
-			ClientSecret: otherClientSecret,
-			Token:        token.AccessToken,
-		})
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("revocation status mismatch: got %s, want %d", resp.Status, http.StatusOK)
-		}
-		_ = readBody(t, resp)
+		for tokenType, value := range map[string]string{"access token": token.AccessToken, "refresh token": token.RefreshToken} {
+			t.Run(tokenType, func(t *testing.T) {
+				resp := postRevoke(t, provider, revocationRequest{
+					ClientID:     otherClientID,
+					ClientSecret: otherClientSecret,
+					Token:        value,
+				})
+				body := readBody(t, resp)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("revocation status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+				}
 
-		response := introspectToken(t, provider, introspectionRequest{
-			ClientID:     webClientID,
-			ClientSecret: webClientSecret,
-			Token:        token.AccessToken,
-		})
-		if !response.Active {
-			t.Fatalf("expected token issued to web client to remain active after another client tried to revoke it")
+				for _, value := range []string{token.AccessToken, token.RefreshToken} {
+					response := introspectToken(t, provider, introspectionRequest{
+						ClientID:     webClientID,
+						ClientSecret: webClientSecret,
+						Token:        value,
+					})
+					if !response.Active {
+						t.Fatal("expected the owner's tokens to remain active after another client tried to revoke them")
+					}
+				}
+			})
 		}
 	})
 }

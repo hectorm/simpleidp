@@ -123,28 +123,36 @@ func testAuthenticationRequestValidation(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 
 	t.Run("rejects missing required parameters", func(t *testing.T) {
-		request := newDefaultConfidentialAuthorizationRequest("missing-scope")
-		params := authorizeParams(request)
-		params.Del("scope")
+		for _, parameter := range []string{"scope", "response_type"} {
+			t.Run(parameter, func(t *testing.T) {
+				request := newDefaultConfidentialAuthorizationRequest("missing-" + parameter)
+				params := authorizeParams(request)
+				params.Del(parameter)
 
-		redirect := expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "invalid_request")
-		if got := redirect.Query().Get("error_description"); !strings.Contains(got, "scope") {
-			t.Fatalf("expected missing scope error, got %q", got)
+				redirect := expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "invalid_request")
+				if got := redirect.Query().Get("error_description"); !strings.Contains(got, parameter) {
+					t.Fatalf("expected missing %s error, got %q", parameter, got)
+				}
+			})
 		}
 	})
 
-	t.Run("does not redirect when redirect_uri is missing", func(t *testing.T) {
-		request := newDefaultConfidentialAuthorizationRequest("missing-redirect-uri")
-		params := authorizeParams(request)
-		params.Del("redirect_uri")
+	t.Run("does not redirect when client_id or redirect_uri is missing", func(t *testing.T) {
+		for _, parameter := range []string{"client_id", "redirect_uri"} {
+			t.Run(parameter, func(t *testing.T) {
+				request := newDefaultConfidentialAuthorizationRequest("missing-" + parameter)
+				params := authorizeParams(request)
+				params.Del(parameter)
 
-		resp := provider.getAuthorize(t, params)
-		body := readBody(t, resp)
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
-		}
-		if resp.Header.Get("Location") != "" {
-			t.Fatalf("did not expect redirect location, got %q", resp.Header.Get("Location"))
+				resp := provider.getAuthorize(t, params)
+				body := readBody(t, resp)
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
+				}
+				if resp.Header.Get("Location") != "" {
+					t.Fatalf("did not expect redirect location, got %q", resp.Header.Get("Location"))
+				}
+			})
 		}
 	})
 
@@ -1390,7 +1398,7 @@ func testSuccessfulRefreshResponse(t *testing.T) {
 		t.Fatalf("expected a new access token, got %#v", refreshed)
 	}
 	if refreshed.IDToken == "" {
-		return
+		t.Fatal("expected the provider to issue an ID Token when the refreshed scope includes openid")
 	}
 
 	refreshedClaims := verifyIDToken(t, provider, refreshed.IDToken)
@@ -1407,8 +1415,8 @@ func testSuccessfulRefreshResponse(t *testing.T) {
 	if refreshedClaims.Iat < issuedAfter || refreshedClaims.Iat > now || refreshedClaims.Exp <= now || refreshedClaims.Exp-refreshedClaims.Iat != int64(refreshed.ExpiresIn) {
 		t.Fatalf("unexpected refreshed id token metadata: %#v", refreshedClaims)
 	}
-	if refreshedClaims.Nonce != "" {
-		t.Fatalf("expected refreshed id token nonce to be omitted, got %q", refreshedClaims.Nonce)
+	if _, present := decodeJWTClaims(t, refreshed.IDToken)["nonce"]; present {
+		t.Fatal("expected refreshed ID Token nonce to be omitted")
 	}
 }
 
@@ -1600,13 +1608,11 @@ func testRefreshTokenRecommendations(t *testing.T) {
 	})
 
 	t.Run("measures inactivity from the precise issue time", func(t *testing.T) {
-		config := defaultProviderConfig()
-		config.RefreshTokenIdleTTL = 500 * time.Millisecond
-		provider := startProvider(t, config)
+		provider := startProvider(t, defaultProviderConfig())
 		request := newDefaultConfidentialAuthorizationRequest("refresh-token-precise-issue-time")
 		authorization := authorizeAndLogin(t, provider, request)
 
-		time.Sleep((1600*time.Millisecond - time.Duration(time.Now().Nanosecond())) % time.Second)
+		issuedAfter := time.Now()
 		token := exchangeAuthorizationCode(t, provider, tokenRequest{
 			ClientID:     request.ClientID,
 			ClientSecret: webClientSecret,
@@ -1614,11 +1620,14 @@ func testRefreshTokenRecommendations(t *testing.T) {
 			RedirectURI:  request.RedirectURI,
 			CodeVerifier: request.Verifier,
 		})
+		provider.assertRefreshTokenIssueTime(t, token.RefreshToken, issuedAfter, time.Now())
+		issuedAfter = time.Now()
 		rotatedToken := exchangeRefreshToken(t, provider, tokenRequest{
 			ClientID:     request.ClientID,
 			ClientSecret: webClientSecret,
 			RefreshToken: token.RefreshToken,
 		})
+		provider.assertRefreshTokenIssueTime(t, rotatedToken.RefreshToken, issuedAfter, time.Now())
 		_ = exchangeRefreshToken(t, provider, tokenRequest{
 			ClientID:     request.ClientID,
 			ClientSecret: webClientSecret,

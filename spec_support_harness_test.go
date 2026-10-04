@@ -23,6 +23,7 @@ import (
 	"html"
 	"io"
 	"math/big"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -93,9 +94,6 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 	}
 	if config.AccessTokenTTL != 0 {
 		env = append(env, "SIMPLE_IDP_ACCESS_TOKEN_TTL="+config.AccessTokenTTL.String())
-	}
-	if config.RefreshTokenIdleTTL != 0 {
-		env = append(env, "SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL="+config.RefreshTokenIdleTTL.String())
 	}
 	for _, client := range config.Clients {
 		prefix := "SIMPLE_IDP_CLIENT_" + client.Label + "_"
@@ -172,7 +170,7 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 	}
 
 	provider := &providerProcess{
-		issuer:       idp.issuer,
+		issuer:       strings.TrimRight(issuer, "/"),
 		idp:          idp,
 		server:       srv,
 		serveDone:    make(chan struct{}),
@@ -188,10 +186,10 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 		close(provider.serveDone)
 	}()
 
-	waitForProviderReady(t, provider)
 	t.Cleanup(func() {
 		provider.stop(t)
 	})
+	waitForProviderReady(t, provider)
 
 	return provider
 }
@@ -911,8 +909,7 @@ func (p *providerProcess) expireAuthorizationCode(t *testing.T, code string) {
 	if !ok {
 		t.Fatalf("authorization code %q not found", code)
 	}
-	pending.createdAt = time.Now().Add(-11 * time.Minute)
-	pending.consentRequired = false
+	pending.createdAt = time.Now().Add(-10 * time.Minute)
 	p.idp.pendingCodes[code] = pending
 }
 
@@ -942,6 +939,20 @@ func (p *providerProcess) accessTokenExpiry(t *testing.T, token string) time.Tim
 		t.Fatalf("access token %q not found", token)
 	}
 	return accessToken.expiry
+}
+
+func (p *providerProcess) assertRefreshTokenIssueTime(t *testing.T, token string, earliest, latest time.Time) {
+	t.Helper()
+
+	p.idp.mu.Lock()
+	stored, ok := p.idp.refreshTokens[token]
+	p.idp.mu.Unlock()
+	if !ok {
+		t.Fatal("issued refresh token was not stored")
+	}
+	if stored.createdAt.Before(earliest) || stored.createdAt.After(latest) {
+		t.Fatalf("refresh token issue time %s is outside exchange interval [%s, %s]", stored.createdAt, earliest, latest)
+	}
 }
 
 func (p *providerProcess) expireAccessToken(t *testing.T, token string) {
@@ -994,12 +1005,32 @@ func expectJSONError(t *testing.T, resp *http.Response, status int) oauthErrorRe
 	if resp.StatusCode != status {
 		t.Fatalf("status mismatch: got %s, want %d; body=%s", resp.Status, status, body)
 	}
+	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		t.Fatalf("expected a JSON error response, got Content-Type %q", resp.Header.Get("Content-Type"))
+	}
 
 	var errResp oauthErrorResponse
 	if err := json.Unmarshal(body, &errResp); err != nil {
 		t.Fatalf("failed to decode error response: %v\nbody=%s", err, body)
 	}
+	if errResp.Error == "" {
+		t.Fatalf("expected a nonempty OAuth error code, got body=%s", body)
+	}
+	assertOAuthErrorText(t, errResp.Error, errResp.ErrorDescription)
 	return errResp
+}
+
+func assertOAuthErrorText(t *testing.T, values ...string) {
+	t.Helper()
+
+	for _, value := range values {
+		for _, char := range value {
+			if char < 0x20 || char > 0x7e || char == '"' || char == '\\' {
+				t.Fatalf("invalid character %U in OAuth error text %q", char, value)
+			}
+		}
+	}
 }
 
 func expectRedirect(t *testing.T, resp *http.Response, status int) *url.URL {
@@ -1033,6 +1064,11 @@ func expectAuthorizationCodeRedirect(t *testing.T, resp *http.Response, status i
 	if code == "" {
 		t.Fatalf("expected authorization code in redirect, got %q", redirect.String())
 	}
+	for _, name := range []string{"error", "error_description", "error_uri", "access_token", "id_token", "refresh_token", "token_type"} {
+		if redirect.Query().Has(name) {
+			t.Fatalf("unexpected parameter %q in authorization code response %q", name, redirect.String())
+		}
+	}
 	return code
 }
 
@@ -1044,6 +1080,12 @@ func expectAuthorizationErrorRedirect(t *testing.T, resp *http.Response, status 
 	assertAuthorizationResponseMetadata(t, redirect, state, issuer)
 	if got := redirect.Query().Get("error"); got != errorCode {
 		t.Fatalf("error mismatch: got %q, want %q", got, errorCode)
+	}
+	assertOAuthErrorText(t, redirect.Query().Get("error"), redirect.Query().Get("error_description"))
+	for _, name := range []string{"code", "access_token", "id_token", "refresh_token", "token_type"} {
+		if redirect.Query().Has(name) {
+			t.Fatalf("unexpected parameter %q in authorization error response %q", name, redirect.String())
+		}
 	}
 	return redirect
 }

@@ -38,12 +38,11 @@ const (
 var testGroups = []string{"admins", "developers"}
 
 type providerConfig struct {
-	IssuerPath          string
-	EditProfile         bool
-	AccessTokenTTL      time.Duration
-	RefreshTokenIdleTTL time.Duration
-	Clients             []clientConfig
-	Users               []userConfig
+	IssuerPath     string
+	EditProfile    bool
+	AccessTokenTTL time.Duration
+	Clients        []clientConfig
+	Users          []userConfig
 }
 
 type clientConfig struct {

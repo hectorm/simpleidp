@@ -234,6 +234,9 @@ func TestSpecCoverageManifest(t *testing.T) {
 			}
 		default:
 			current.documented++
+			if section.Run != nil {
+				t.Fatalf("manifest entry %s has a test implementation that will never run", key)
+			}
 			if section.Notes == "" {
 				t.Fatalf("manifest entry %s has no test implementation or explanatory note", key)
 			}

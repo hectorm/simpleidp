@@ -1028,6 +1028,7 @@ func testOAuth21ClientAuthenticationOfNativeApps(t *testing.T) {
 		errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
 			ClientID:     request.ClientID,
 			ClientSecret: "unexpected-secret",
+			AuthMethod:   authMethodClientSecretPost,
 			Code:         authorization.Code,
 			RedirectURI:  request.RedirectURI,
 			CodeVerifier: request.Verifier,

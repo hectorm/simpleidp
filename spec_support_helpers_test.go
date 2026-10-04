@@ -71,11 +71,7 @@ func decodeJWTClaims(t *testing.T, token string) map[string]any {
 	if err != nil {
 		t.Fatalf("failed to decode JWT claims: %v", err)
 	}
-	claims := decodeJSONMap(t, payload)
-	if claims == nil {
-		t.Fatal("JWT claims must be a JSON object")
-	}
-	return claims
+	return decodeJSONMap(t, payload)
 }
 
 func tamperJWTSignature(t *testing.T, token string) string {
@@ -104,6 +100,9 @@ func decodeJSONMap(t *testing.T, body []byte) map[string]any {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("failed to decode JSON object: %v\nbody=%s", err, body)
 	}
+	if payload == nil {
+		t.Fatalf("expected a JSON object, got body=%s", body)
+	}
 	return payload
 }
 
@@ -115,7 +114,7 @@ func fetchDiscoveryResponse(t *testing.T, provider *providerProcess) (*http.Resp
 		t.Fatalf("failed to create discovery request: %v", err)
 	}
 
-	resp := provider.do(t, provider.http, req)
+	resp := provider.do(t, provider.redirectless, req)
 	return resp, readBody(t, resp)
 }
 
@@ -314,6 +313,8 @@ type backchannelLogoutReceiver struct {
 type backchannelLogoutRequest struct {
 	contentType string
 	rawToken    string
+	form        url.Values
+	rawQuery    string
 }
 
 func startBackchannelLogoutReceiver(t *testing.T) (*backchannelLogoutReceiver, string) {
@@ -322,14 +323,26 @@ func startBackchannelLogoutReceiver(t *testing.T) (*backchannelLogoutReceiver, s
 	receiver := &backchannelLogoutReceiver{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /backchannel-logout", func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
 		_ = r.Body.Close()
+		if err != nil {
+			t.Errorf("failed to read back-channel logout request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 
-		parsed, _ := url.ParseQuery(string(body))
+		parsed, err := url.ParseQuery(string(body))
+		if err != nil {
+			t.Errorf("invalid back-channel logout form: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receiver.mu.Lock()
 		receiver.requests = append(receiver.requests, backchannelLogoutRequest{
 			contentType: r.Header.Get("Content-Type"),
 			rawToken:    parsed.Get("logout_token"),
+			form:        parsed,
+			rawQuery:    r.URL.RawQuery,
 		})
 		receiver.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
@@ -438,6 +451,10 @@ func performLogoutWithBackchannel(t *testing.T, provider *providerProcess) token
 	})
 
 	body := fetchLogoutForm(t, provider, url.Values{})
-	_ = readBody(t, submitConsentForm(t, provider, body, "yes"))
+	resp := submitConsentForm(t, provider, body, "yes")
+	body = readBody(t, resp)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `data-testid="page-logout-complete"`) {
+		t.Fatalf("logout did not complete: got %s; body=%s", resp.Status, body)
+	}
 	return token
 }

@@ -329,12 +329,24 @@ func testIntrospectionSecurityConsiderations(t *testing.T) {
 			CodeVerifier: request.Verifier,
 		})
 
-		resp := provider.postIntrospect(t, introspectionRequest{
-			ClientID:     otherClientID,
-			ClientSecret: otherClientSecret,
-			Token:        token.AccessToken,
-		})
-		expectInactiveIntrospectionResponse(t, resp)
+		for tokenType, value := range map[string]string{"access token": token.AccessToken, "refresh token": token.RefreshToken} {
+			t.Run(tokenType, func(t *testing.T) {
+				ownerResponse := introspectToken(t, provider, introspectionRequest{
+					ClientID:     webClientID,
+					ClientSecret: webClientSecret,
+					Token:        value,
+				})
+				if !ownerResponse.Active {
+					t.Fatal("expected a live token before testing introspection by another client")
+				}
+				resp := provider.postIntrospect(t, introspectionRequest{
+					ClientID:     otherClientID,
+					ClientSecret: otherClientSecret,
+					Token:        value,
+				})
+				expectInactiveIntrospectionResponse(t, resp)
+			})
+		}
 	})
 
 	t.Run("returns only active false for expired access tokens", func(t *testing.T) {
