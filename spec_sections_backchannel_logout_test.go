@@ -116,6 +116,8 @@ func testBackChannelLogout(t *testing.T) {
 				provider := startProvider(t, config)
 				otherBrowser := newProviderBrowser(t, provider)
 				request := newDefaultConfidentialAuthorizationRequest("reauthentication-grants")
+				_ = authorizeAndLogin(t, provider, request)
+				authenticatedAt := provider.ageSession(t, 2*time.Minute, 0).Unix()
 				token := authorizeAndExchange(t, provider, request, tokenRequest{
 					ClientID:     request.ClientID,
 					ClientSecret: webClientSecret,
@@ -127,11 +129,9 @@ func testBackChannelLogout(t *testing.T) {
 					CodeVerifier: request.Verifier,
 				})
 				claims := verifyIDToken(t, provider, token.IDToken)
-				provider.idp.mu.Lock()
-				currentSession := provider.idp.sessions[claims.Sid]
-				currentSession.authenticatedAt = time.Now().Add(-time.Minute)
-				provider.idp.sessions[claims.Sid] = currentSession
-				provider.idp.mu.Unlock()
+				if claims.AuthTime != authenticatedAt {
+					t.Fatalf("auth_time mismatch: got %d, want %d", claims.AuthTime, authenticatedAt)
+				}
 
 				request.ClientID = otherClientID
 				request.RedirectURI = otherClientRedirect
@@ -673,6 +673,7 @@ func testBackChannelLogoutRememberingRPs(t *testing.T) {
 					provider := startProvider(t, backchannelProviderConfig(uri, false))
 					request := newDefaultConfidentialAuthorizationRequest("expired-session-logout")
 					token := authorizeAndExchange(t, provider, request, tokenRequest{
+						ClientID:     request.ClientID,
 						ClientSecret: webClientSecret,
 						CodeVerifier: request.Verifier,
 					})
@@ -742,6 +743,7 @@ func testBackChannelLogoutRememberingRPs(t *testing.T) {
 				provider := startProvider(t, backchannelProviderConfig(uri, true))
 				request := newDefaultConfidentialAuthorizationRequest("logout-final-access-token")
 				token := authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
 					ClientSecret: webClientSecret,
 					CodeVerifier: request.Verifier,
 				})

@@ -11,7 +11,7 @@ var oidcBackChannelLogoutSections = []specSection{
 	{Spec: "OIDC Back-Channel Logout 1.0", Section: "1.2", Title: "Terminology", Notes: "Terminology definitions are not test targets."},
 	{Spec: "OIDC Back-Channel Logout 1.0", Section: "2", Title: "Back-Channel Logout", Applicable: true, Run: testBackChannelLogout},
 	{Spec: "OIDC Back-Channel Logout 1.0", Section: "2.1", Title: "Indicating OP Support for Back-Channel Logout", Applicable: true, Run: testBackChannelLogoutDiscoveryMetadata},
-	{Spec: "OIDC Back-Channel Logout 1.0", Section: "2.2", Title: "Indicating RP Support for Back-Channel Logout", Applicable: true, Notes: "Configured URIs must include a host and omit fragments; query parameters are retained. Provider policy also rejects user info. TLS is out of scope, so back-channel logout URIs may use http, including for public clients.", Run: testBackChannelLogoutClientRegistration},
+	{Spec: "OIDC Back-Channel Logout 1.0", Section: "2.2", Title: "Indicating RP Support for Back-Channel Logout", Applicable: true, Notes: "Configured URIs must include a host and omit fragments; query parameters are retained. As provider policy, user info is also rejected. TLS is out of scope, so back-channel logout URIs may use http, including for public clients.", Run: testBackChannelLogoutClientRegistration},
 	{Spec: "OIDC Back-Channel Logout 1.0", Section: "2.3", Title: "Remembering Logged-In RPs", Applicable: true, Run: testBackChannelLogoutRememberingRPs},
 	{Spec: "OIDC Back-Channel Logout 1.0", Section: "2.4", Title: "Logout Token", Applicable: true, Run: testBackChannelLogoutToken},
 	{Spec: "OIDC Back-Channel Logout 1.0", Section: "2.5", Title: "Back-Channel Logout Request", Applicable: true, Run: testBackChannelLogoutRequest},

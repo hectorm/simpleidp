@@ -859,7 +859,7 @@ func (p *providerProcess) expireSessionIdle(t *testing.T) {
 	p.ageSession(t, p.idp.sessionIdleTTL+time.Minute, p.idp.sessionIdleTTL+time.Minute)
 }
 
-func (p *providerProcess) ageSession(t *testing.T, authenticatedAge, idleAge time.Duration) {
+func (p *providerProcess) ageSession(t *testing.T, authenticatedAge, idleAge time.Duration) time.Time {
 	t.Helper()
 
 	sessionID := p.currentSessionID(t)
@@ -875,6 +875,7 @@ func (p *providerProcess) ageSession(t *testing.T, authenticatedAge, idleAge tim
 	currentSession.authenticatedAt = now.Add(-authenticatedAge)
 	currentSession.lastSeenAt = now.Add(-idleAge)
 	p.idp.sessions[sessionID] = currentSession
+	return currentSession.authenticatedAt
 }
 
 func (p *providerProcess) expireAuthorizationCode(t *testing.T, code string) {
@@ -887,7 +888,7 @@ func (p *providerProcess) expireAuthorizationCode(t *testing.T, code string) {
 	if !ok {
 		t.Fatalf("authorization code %q not found", code)
 	}
-	pending.createdAt = time.Now().Add(-codeTTL - time.Minute)
+	pending.createdAt = time.Now().Add(-11 * time.Minute)
 	pending.consentRequired = false
 	p.idp.pendingCodes[code] = pending
 }

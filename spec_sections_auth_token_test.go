@@ -323,13 +323,22 @@ func testAuthenticationRequestValidation(t *testing.T) {
 	})
 
 	t.Run("rejects duplicate parameters", func(t *testing.T) {
-		request := newDefaultConfidentialAuthorizationRequest("duplicate-scope")
-		params := authorizeParams(request)
-		params["scope"] = []string{"openid profile", "openid email"}
+		for _, parameter := range []string{"scope", "unknown_parameter"} {
+			t.Run(parameter, func(t *testing.T) {
+				request := newDefaultConfidentialAuthorizationRequest("duplicate-" + parameter)
+				params := authorizeParams(request)
+				if parameter == "unknown_parameter" {
+					params.Set(parameter, "ignored")
+					params.Add(parameter, params.Get(parameter))
+				} else {
+					params[parameter] = []string{"openid profile", "openid email"}
+				}
 
-		redirect := expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "invalid_request")
-		if got := redirect.Query().Get("error_description"); !strings.Contains(got, "Duplicate parameter") {
-			t.Fatalf("expected duplicate parameter error, got %q", got)
+				redirect := expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "invalid_request")
+				if got := redirect.Query().Get("error_description"); !strings.Contains(got, "Duplicate parameter") {
+					t.Fatalf("expected duplicate parameter error, got %q", got)
+				}
+			})
 		}
 	})
 
@@ -439,12 +448,8 @@ func testAuthorizationServerAuthenticatesEndUser(t *testing.T) {
 	t.Run("reuses authenticated sessions without prompting again", func(t *testing.T) {
 		provider := startProvider(t, defaultProviderConfig())
 		initialRequest := newDefaultConfidentialAuthorizationRequest("session-reuse-initial")
-		initialToken := authorizeAndExchange(t, provider, initialRequest, tokenRequest{
-			ClientID:     initialRequest.ClientID,
-			ClientSecret: webClientSecret,
-			CodeVerifier: initialRequest.Verifier,
-		})
-		initialClaims := verifyIDToken(t, provider, initialToken.IDToken)
+		_ = authorizeAndLogin(t, provider, initialRequest)
+		authenticatedAt := provider.ageSession(t, 2*time.Minute, 0).Unix()
 
 		request := newDefaultConfidentialAuthorizationRequest("session-reuse-follow-up")
 		code := expectAuthorizationCodeRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, provider.issuer)
@@ -456,8 +461,8 @@ func testAuthorizationServerAuthenticatesEndUser(t *testing.T) {
 			CodeVerifier: request.Verifier,
 		})
 		claims := verifyIDToken(t, provider, token.IDToken)
-		if claims.AuthTime != initialClaims.AuthTime {
-			t.Fatalf("expected reused session auth_time %d, got %d", initialClaims.AuthTime, claims.AuthTime)
+		if claims.AuthTime != authenticatedAt {
+			t.Fatalf("expected reused session auth_time %d, got %d", authenticatedAt, claims.AuthTime)
 		}
 	})
 
@@ -531,12 +536,8 @@ func testAuthorizationServerAuthenticatesEndUser(t *testing.T) {
 	t.Run("returns a positive response for prompt none when a session exists", func(t *testing.T) {
 		provider := startProvider(t, defaultProviderConfig())
 		initialRequest := newDefaultConfidentialAuthorizationRequest("prompt-none-session-initial")
-		initialToken := authorizeAndExchange(t, provider, initialRequest, tokenRequest{
-			ClientID:     initialRequest.ClientID,
-			ClientSecret: webClientSecret,
-			CodeVerifier: initialRequest.Verifier,
-		})
-		initialClaims := verifyIDToken(t, provider, initialToken.IDToken)
+		_ = authorizeAndLogin(t, provider, initialRequest)
+		authenticatedAt := provider.ageSession(t, 2*time.Minute, 0).Unix()
 
 		request := newDefaultConfidentialAuthorizationRequest("prompt-none-session")
 		request.Prompt = "none"
@@ -549,8 +550,8 @@ func testAuthorizationServerAuthenticatesEndUser(t *testing.T) {
 			CodeVerifier: request.Verifier,
 		})
 		claims := verifyIDToken(t, provider, token.IDToken)
-		if claims.AuthTime != initialClaims.AuthTime {
-			t.Fatalf("expected reused session auth_time %d, got %d", initialClaims.AuthTime, claims.AuthTime)
+		if claims.AuthTime != authenticatedAt {
+			t.Fatalf("expected reused session auth_time %d, got %d", authenticatedAt, claims.AuthTime)
 		}
 	})
 
@@ -1292,12 +1293,18 @@ func testRefreshRequest(t *testing.T) {
 func testSuccessfulRefreshResponse(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 	request := newDefaultConfidentialAuthorizationRequest("successful-refresh-response")
+	_ = authorizeAndLogin(t, provider, request)
+	authenticatedAt := provider.ageSession(t, 2*time.Minute, 0).Unix()
+	request.Prompt = "none"
 	token := authorizeAndExchange(t, provider, request, tokenRequest{
 		ClientID:     request.ClientID,
 		ClientSecret: webClientSecret,
 		CodeVerifier: request.Verifier,
 	})
 	originalClaims := verifyIDToken(t, provider, token.IDToken)
+	if originalClaims.AuthTime != authenticatedAt {
+		t.Fatalf("auth_time mismatch: got %d, want %d", originalClaims.AuthTime, authenticatedAt)
+	}
 
 	issuedAfter := time.Now().Unix()
 	refreshed := exchangeRefreshToken(t, provider, tokenRequest{
@@ -1557,6 +1564,70 @@ func testRefreshTokenRecommendations(t *testing.T) {
 func testTokenErrorResponse(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 
+	t.Run("returns invalid_request for duplicate parameters", func(t *testing.T) {
+		for _, grantType := range []string{"authorization_code", "refresh_token", "client_credentials"} {
+			t.Run(grantType, func(t *testing.T) {
+				provider := startProvider(t, defaultProviderConfig())
+				form := url.Values{
+					"grant_type":        {grantType},
+					"client_id":         {webClientID},
+					"client_secret":     {webClientSecret},
+					"unknown_parameter": {"ignored"},
+				}
+				switch grantType {
+				case "authorization_code":
+					request := newDefaultConfidentialAuthorizationRequest("duplicate-token-parameters")
+					authorization := authorizeAndLogin(t, provider, request)
+					form.Set("code", authorization.Code)
+					form.Set("redirect_uri", request.RedirectURI)
+					form.Set("code_verifier", request.Verifier)
+				case "refresh_token":
+					request := newDefaultConfidentialAuthorizationRequest("duplicate-refresh-parameters")
+					token := authorizeAndExchange(t, provider, request, tokenRequest{
+						ClientID:     request.ClientID,
+						ClientSecret: webClientSecret,
+						CodeVerifier: request.Verifier,
+					})
+					form.Set("refresh_token", token.RefreshToken)
+					form.Set("scope", "openid")
+				case "client_credentials":
+					form.Set("scope", "orders:read")
+				}
+
+				for _, parameter := range []string{"grant_type", "client_id", "client_secret", "code", "redirect_uri", "code_verifier", "refresh_token", "scope", "unknown_parameter"} {
+					if !form.Has(parameter) {
+						continue
+					}
+					t.Run(parameter, func(t *testing.T) {
+						duplicateForm := url.Values{}
+						for name, values := range form {
+							duplicateForm[name] = append([]string(nil), values...)
+						}
+						duplicateForm.Add(parameter, form.Get(parameter))
+
+						errResp := expectJSONError(t, provider.postFormURL(t, provider.endpoint("/token"), duplicateForm, "", false), http.StatusBadRequest)
+						if errResp.Error != "invalid_request" {
+							t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_request")
+						}
+					})
+				}
+
+				resp := provider.postFormURL(t, provider.endpoint("/token"), form, "", false)
+				body := readBody(t, resp)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("token status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+				}
+				var token tokenResponse
+				if err := json.Unmarshal(body, &token); err != nil {
+					t.Fatalf("failed to decode token response: %v; body=%s", err, body)
+				}
+				if token.AccessToken == "" {
+					t.Fatalf("expected access token, got %#v", token)
+				}
+			})
+		}
+	})
+
 	t.Run("returns invalid_request for malformed token requests", func(t *testing.T) {
 		errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
 			ClientID:     webClientID,
@@ -1684,6 +1755,49 @@ func testIDToken(t *testing.T) {
 	now := time.Now().Unix()
 	if claims.Iat < issuedAfter || claims.Iat > now || claims.Exp <= now || claims.Exp-claims.Iat != int64(token.ExpiresIn) {
 		t.Fatalf("unexpected id token metadata: %#v", claims)
+	}
+
+	t.Run("accepts a 255-character ASCII subject", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users[0].Sub = strings.Repeat("a", 255)
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("maximum-length-subject")
+		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+		if claims := verifyIDToken(t, provider, token.IDToken); claims.Sub != config.Users[0].Sub {
+			t.Fatalf("subject mismatch: got %q, want %q", claims.Sub, config.Users[0].Sub)
+		}
+	})
+
+	for _, testCase := range []struct {
+		name string
+		sub  string
+	}{
+		{name: "rejects a 256-character ASCII subject", sub: strings.Repeat("a", 256)},
+		{name: "rejects a non-ASCII subject", sub: "josé"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			environ := []string{
+				"SIMPLE_IDP_USER_ALICE_USERNAME=" + testUsername,
+				"SIMPLE_IDP_USER_ALICE_PASSWORD=" + testPassword,
+				"SIMPLE_IDP_USER_ALICE_SUB=" + testCase.sub,
+			}
+			_, err := loadUsers(environ, func(name string) string {
+				for _, item := range environ {
+					key, value, _ := strings.Cut(item, "=")
+					if key == name {
+						return value
+					}
+				}
+				return ""
+			})
+			if err == nil || !strings.Contains(err.Error(), "sub claim") {
+				t.Fatalf("expected invalid subject configuration error, got %v", err)
+			}
+		})
 	}
 }
 
@@ -1924,12 +2038,8 @@ func testMandatoryToImplementFeaturesForAllOpenIDProviders(t *testing.T) {
 
 	t.Run("accepts max_age and returns auth_time", func(t *testing.T) {
 		baseline := newDefaultConfidentialAuthorizationRequest("mti-op-max-age-baseline")
-		baselineToken := authorizeAndExchange(t, provider, baseline, tokenRequest{
-			ClientID:     baseline.ClientID,
-			ClientSecret: webClientSecret,
-			CodeVerifier: baseline.Verifier,
-		})
-		baselineClaims := verifyIDToken(t, provider, baselineToken.IDToken)
+		_ = authorizeAndLogin(t, provider, baseline)
+		authenticatedAt := provider.ageSession(t, 2*time.Minute, 0).Unix()
 
 		request := newDefaultConfidentialAuthorizationRequest("mti-op-max-age-within-window")
 		params := authorizeParams(request)
@@ -1944,8 +2054,8 @@ func testMandatoryToImplementFeaturesForAllOpenIDProviders(t *testing.T) {
 			CodeVerifier: request.Verifier,
 		})
 		claims := verifyIDToken(t, provider, token.IDToken)
-		if claims.AuthTime != baselineClaims.AuthTime {
-			t.Fatalf("expected reused session auth_time %d, got %d", baselineClaims.AuthTime, claims.AuthTime)
+		if claims.AuthTime != authenticatedAt {
+			t.Fatalf("expected reused session auth_time %d, got %d", authenticatedAt, claims.AuthTime)
 		}
 
 		request = newDefaultConfidentialAuthorizationRequest("mti-op-max-age")
@@ -1961,6 +2071,7 @@ func testMandatoryToImplementFeaturesForAllOpenIDProviders(t *testing.T) {
 			t.Fatalf("expected login form, got body=%s", body)
 		}
 
+		reauthenticatedAt := time.Now().Unix()
 		token = exchangeAuthorizationCode(t, provider, tokenRequest{
 			ClientID:     request.ClientID,
 			ClientSecret: webClientSecret,
@@ -1969,8 +2080,8 @@ func testMandatoryToImplementFeaturesForAllOpenIDProviders(t *testing.T) {
 			CodeVerifier: request.Verifier,
 		})
 		claims = verifyIDToken(t, provider, token.IDToken)
-		if claims.AuthTime == 0 {
-			t.Fatalf("expected auth_time claim, got %#v", claims)
+		if claims.AuthTime < reauthenticatedAt || claims.AuthTime > time.Now().Unix() {
+			t.Fatalf("expected fresh auth_time, got %d, want at least %d", claims.AuthTime, reauthenticatedAt)
 		}
 	})
 }
