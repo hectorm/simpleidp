@@ -42,7 +42,7 @@ All configuration is done through environment variables. At least one client and
 | `SIMPLE_IDP_ACCESS_TOKEN_TTL`       | Access and ID token lifetime (default `5m`)                       |
 | `SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL` | Refresh token idle timeout (default `30m`)                        |
 | `SIMPLE_IDP_REFRESH_TOKEN_MAX_TTL`  | Refresh token maximum lifetime (default `10h`)                    |
-| `SIMPLE_IDP_KEY_ID`                 | JWKS key ID (default `simple-idp`)                                |
+| `SIMPLE_IDP_KEY_ID`                 | JWKS key ID (default `simpleidp`)                                 |
 | `SIMPLE_IDP_KEY_FILE`               | PEM file for PKCS8 RSA private key (generated in memory if empty) |
 | `SIMPLE_IDP_KEY_B64`                | Base64-encoded PKCS8 RSA private key (alternative to `KEY_FILE`)  |
 

@@ -12,11 +12,15 @@ on:
 permissions: {}
 
 jobs:
-  smoke:
-    name: "Smoke test"
+  docker:
+    name: "Docker"
     runs-on: "ubuntu-latest"
     permissions:
       contents: "read"
+      packages: "write"
+    defaults:
+      run:
+        shell: "bash"
     steps:
       - name: "Checkout"
         env:
@@ -27,12 +31,51 @@ jobs:
           git remote add origin "https://x-access-token:${TOKEN:?}@github.com/${REPOSITORY:?}.git"
           git fetch --depth=1 origin "${GITHUB_SHA:?}"
           git checkout --detach FETCH_HEAD
-      - name: "Test"
+          git remote set-url origin "https://github.com/${REPOSITORY:?}.git"
+          printf 'SOURCE_DATE_EPOCH=%s\n' "$(git log -1 --format=%ct)" >>"${GITHUB_ENV:?}"
+      - name: "Build images and run tests"
+        env:
+          REPOSITORY: "${{ github.repository }}"
         run: |
-          docker compose up --detach --wait --wait-timeout 60
-      - name: "After test"
+          docker buildx create --use
+          for architecture in amd64 arm64; do
+            docker buildx build ./ \
+              --platform "linux/${architecture}" \
+              --label "org.opencontainers.image.source=https://github.com/${REPOSITORY:?}" \
+              --tag "simpleidp:${architecture}" \
+              --output type=docker,rewrite-timestamp=true
+          done
+          docker image tag "simpleidp:$(docker version --format '{{.Server.Arch}}')" simpleidp:latest
+      - name: "Smoke test"
+        run: |
+          docker compose up --detach --no-build --pull never --wait --wait-timeout 60
+      - name: "After smoke test"
         if: "always()"
         run: |
-          docker compose logs --tail all
+          docker compose logs --tail all ||:
           docker compose down --volumes
-          docker compose rm --force
+      - name: "Push image"
+        if: "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+        env:
+          REPOSITORY: "${{ github.repository }}"
+          ACTOR: "${{ github.actor }}"
+          TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        run: |
+          printenv TOKEN | docker login ghcr.io --username "${ACTOR:?}" --password-stdin
+          image_name="ghcr.io/${REPOSITORY,,}"
+          image_refs=()
+          for architecture in amd64 arm64; do
+            metadata_file="${RUNNER_TEMP:?}/simpleidp-${architecture}.json"
+            docker buildx build ./ \
+              --platform "linux/${architecture}" \
+              --label "org.opencontainers.image.source=https://github.com/${REPOSITORY:?}" \
+              --provenance=mode=max --sbom=true \
+              --output "type=image,name=${image_name:?},push-by-digest=true,push=true,rewrite-timestamp=true" \
+              --metadata-file "${metadata_file}"
+            image_refs+=("${image_name:?}@$(jq --raw-output --exit-status '."containerimage.digest"' "${metadata_file}")")
+          done
+          docker buildx imagetools create --tag "${image_name:?}:latest" "${image_refs[@]}"
+      - name: "Logout from GHCR"
+        if: "always() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+        run: |
+          docker logout ghcr.io

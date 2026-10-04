@@ -1,15 +1,15 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
-name: "simple-idp"
+name: "simpleidp"
 
 services:
-  simple-idp:
-    image: "simple-idp"
+  simpleidp:
+    image: "simpleidp"
     pull_policy: "build"
     build: { context: "./" }
     restart: "always"
-    hostname: "simple-idp"
+    hostname: "simpleidp"
     networks:
-      - "simple-idp"
+      - "simpleidp"
     ports:
       - "8227:8227/tcp"
     environment:
@@ -56,4 +56,4 @@ services:
       SIMPLE_IDP_USER_FRANK_GROUPS: "zeta,eta"
 
 networks:
-  simple-idp:
+  simpleidp:

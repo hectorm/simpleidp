@@ -16,7 +16,7 @@
 // SIMPLE_IDP_ACCESS_TOKEN_TTL       - access and ID token lifetime (default: "5m")
 // SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL - refresh token idle timeout (default: "30m")
 // SIMPLE_IDP_REFRESH_TOKEN_MAX_TTL  - refresh token maximum lifetime (default: "10h")
-// SIMPLE_IDP_KEY_ID                 - JWKS key ID (default: "simple-idp")
+// SIMPLE_IDP_KEY_ID                 - JWKS key ID (default: "simpleidp")
 // SIMPLE_IDP_KEY_FILE               - PEM file for PKCS8 RSA private key (generated in memory if empty)
 // SIMPLE_IDP_KEY_B64                - base64-encoded PKCS8 RSA private key (alternative to KEY_FILE)
 //
@@ -279,7 +279,7 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 	if err != nil {
 		return "", nil, err
 	}
-	keyID := envOr(lookupEnv, "SIMPLE_IDP_KEY_ID", "simple-idp")
+	keyID := envOr(lookupEnv, "SIMPLE_IDP_KEY_ID", "simpleidp")
 	privKey, err := loadOrGenerateKey(lookupEnv, readFile)
 	if err != nil {
 		return "", nil, err
@@ -335,6 +335,10 @@ func newServer(listen string, provider *identityProvider) *http.Server {
 	mux.HandleFunc("GET "+provider.base+"/end-session", provider.handleEndSession)
 	mux.HandleFunc("POST "+provider.base+"/end-session", provider.handleEndSession)
 	mux.HandleFunc("GET "+provider.base+"/favicon.ico", provider.handleFavicon)
+
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")

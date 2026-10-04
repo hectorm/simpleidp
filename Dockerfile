@@ -18,11 +18,11 @@ RUN CGO_ENABLED=0 \
 	GOOS="${TARGETOS-}" \
 	GOARCH="${TARGETARCH-}" \
 	GOARM="$([ "${TARGETARCH-}" != 'arm' ] || printf '%s' "${TARGETVARIANT#v}")" \
-	go build -o ./simple-idp ./cmd/simple-idp/
-RUN test -z "$(readelf -x .interp ./simple-idp 2>/dev/null)"
+	go build -o ./simpleidp ./cmd/simpleidp/
+RUN test -z "$(readelf -x .interp ./simpleidp 2>/dev/null)"
 
 WORKDIR /rootfs/
-RUN install -DTm 0555 /src/simple-idp ./simple-idp
+RUN install -DTm 0555 /src/simpleidp ./simpleidp
 RUN install -DTm 0644 /etc/ssl/certs/ca-certificates.crt ./etc/ssl/certs/ca-certificates.crt
 RUN mkdir -m 1777 ./run/ ./tmp/
 
@@ -35,4 +35,7 @@ FROM scratch AS main
 COPY --from=build /rootfs/ /
 
 USER 18227:18227
-ENTRYPOINT ["/simple-idp"]
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --start-interval=1s --retries=3 CMD ["/simpleidp", "-healthcheck"]
+
+ENTRYPOINT ["/simpleidp"]
