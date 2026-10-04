@@ -682,6 +682,9 @@ func verifyIDToken(t *testing.T, provider *providerProcess, idToken string) idTo
 		t.Fatalf("expected a single jwk, got %#v", jwks.Keys)
 	}
 	header := decodeJWTHeader(t, idToken)
+	if header.Alg != "RS256" {
+		t.Fatalf("signing algorithm mismatch: got %q, want %q", header.Alg, "RS256")
+	}
 	if header.Kid == "" || header.Kid != jwks.Keys[0].KeyID {
 		t.Fatalf("kid mismatch: got %q, want %q", header.Kid, jwks.Keys[0].KeyID)
 	}
@@ -723,6 +726,9 @@ func verifyAccessToken(t *testing.T, provider *providerProcess, accessToken stri
 		t.Fatalf("expected a single jwk, got %#v", jwks.Keys)
 	}
 	header := decodeJWTHeader(t, accessToken)
+	if header.Alg != "RS256" {
+		t.Fatalf("signing algorithm mismatch: got %q, want %q", header.Alg, "RS256")
+	}
 	if header.Kid == "" || header.Kid != jwks.Keys[0].KeyID {
 		t.Fatalf("kid mismatch: got %q, want %q", header.Kid, jwks.Keys[0].KeyID)
 	}
@@ -768,6 +774,20 @@ func fetchJWKS(t *testing.T, provider *providerProcess) jwksDocument {
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("jwks status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+	}
+
+	var rawDocument struct {
+		Keys []map[string]any `json:"keys"`
+	}
+	if err := json.Unmarshal(body, &rawDocument); err != nil {
+		t.Fatalf("failed to decode jwks response: %v\nbody=%s", err, body)
+	}
+	for _, key := range rawDocument.Keys {
+		for _, name := range []string{"d", "p", "q", "dp", "dq", "qi", "oth", "k"} {
+			if _, present := key[name]; present {
+				t.Fatalf("jwks must not contain private or symmetric key member %q", name)
+			}
+		}
 	}
 
 	var document jwksDocument
@@ -1051,10 +1071,16 @@ func assertRedirectTarget(t *testing.T, redirect *url.URL, redirectURI string) {
 func assertAuthorizationResponseMetadata(t *testing.T, redirect *url.URL, state, issuer string) {
 	t.Helper()
 
-	if got := redirect.Query().Get("state"); got != state {
+	params := redirect.Query()
+	for _, name := range []string{"code", "error", "error_description", "error_uri", "state", "iss"} {
+		if len(params[name]) > 1 {
+			t.Fatalf("duplicate authorization response parameter %q in %q", name, redirect.String())
+		}
+	}
+	if got := params.Get("state"); got != state {
 		t.Fatalf("state mismatch: got %q, want %q", got, state)
 	}
-	if got := redirect.Query().Get("iss"); got != issuer {
+	if got := params.Get("iss"); got != issuer {
 		t.Fatalf("redirect issuer mismatch: got %q, want %q", got, issuer)
 	}
 }

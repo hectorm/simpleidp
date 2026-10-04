@@ -33,6 +33,7 @@ func testProviderMetadata(t *testing.T) {
 	if discovery.JWKSURI != provider.endpoint("/jwks") {
 		t.Fatalf("jwks uri mismatch: got %q", discovery.JWKSURI)
 	}
+	_ = fetchJWKS(t, provider)
 	slices.Sort(discovery.ScopesSupported)
 	if !slices.Equal(discovery.ScopesSupported, []string{"email", "groups", "openid", "profile", "roles"}) {
 		t.Fatalf("unexpected supported scopes: %#v", discovery.ScopesSupported)

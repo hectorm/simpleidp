@@ -323,18 +323,33 @@ func testAuthenticationRequestValidation(t *testing.T) {
 	})
 
 	t.Run("rejects duplicate recognized parameters", func(t *testing.T) {
-		for _, parameter := range []string{"response_type", "scope", "state", "nonce", "code_challenge", "code_challenge_method", "claims", "ui_locales"} {
-			t.Run(parameter, func(t *testing.T) {
-				request := newDefaultConfidentialAuthorizationRequest("duplicate-" + parameter)
-				params := authorizeParams(request)
-				if !params.Has(parameter) {
-					params.Set(parameter, "ignored")
-				}
-				params.Add(parameter, params.Get(parameter))
+		for _, method := range []string{http.MethodGet, "POST query", "POST body"} {
+			t.Run(method, func(t *testing.T) {
+				for _, parameter := range []string{"response_type", "scope", "state", "nonce", "code_challenge", "code_challenge_method", "claims", "ui_locales"} {
+					t.Run(parameter, func(t *testing.T) {
+						request := newDefaultConfidentialAuthorizationRequest("duplicate-" + parameter)
+						params := authorizeParams(request)
+						if !params.Has(parameter) {
+							params.Set(parameter, "ignored")
+						}
+						params.Add(parameter, params.Get(parameter))
 
-				redirect := expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "invalid_request")
-				if got := redirect.Query().Get("error_description"); !strings.Contains(got, "Duplicate parameter") {
-					t.Fatalf("expected duplicate parameter error, got %q", got)
+						var resp *http.Response
+						status := http.StatusSeeOther
+						switch method {
+						case http.MethodGet:
+							resp = provider.getAuthorize(t, params)
+							status = http.StatusFound
+						case "POST query":
+							resp = provider.postAuthorize(t, params, nil)
+						case "POST body":
+							resp = provider.postAuthorize(t, nil, params)
+						}
+						redirect := expectAuthorizationErrorRedirect(t, resp, status, request.RedirectURI, request.State, provider.issuer, "invalid_request")
+						if got := redirect.Query().Get("error_description"); !strings.Contains(got, "Duplicate parameter") {
+							t.Fatalf("expected duplicate parameter error, got %q", got)
+						}
+					})
 				}
 			})
 		}
@@ -373,18 +388,34 @@ func testAuthenticationRequestValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("does not redirect duplicate client identifiers", func(t *testing.T) {
-		request := newDefaultConfidentialAuthorizationRequest("duplicate-client-id")
-		params := authorizeParams(request)
-		params["client_id"] = []string{request.ClientID, request.ClientID}
+	t.Run("does not redirect duplicate client identifiers or redirect uris", func(t *testing.T) {
+		for _, method := range []string{http.MethodGet, "POST query", "POST body"} {
+			t.Run(method, func(t *testing.T) {
+				for _, parameter := range []string{"client_id", "redirect_uri"} {
+					t.Run(parameter, func(t *testing.T) {
+						request := newDefaultConfidentialAuthorizationRequest("duplicate-" + parameter)
+						params := authorizeParams(request)
+						params.Add(parameter, params.Get(parameter))
 
-		resp := provider.getAuthorize(t, params)
-		body := readBody(t, resp)
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
-		}
-		if resp.Header.Get("Location") != "" {
-			t.Fatalf("did not expect redirect location, got %q", resp.Header.Get("Location"))
+						var resp *http.Response
+						switch method {
+						case http.MethodGet:
+							resp = provider.getAuthorize(t, params)
+						case "POST query":
+							resp = provider.postAuthorize(t, params, nil)
+						case "POST body":
+							resp = provider.postAuthorize(t, nil, params)
+						}
+						body := readBody(t, resp)
+						if resp.StatusCode != http.StatusBadRequest {
+							t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
+						}
+						if resp.Header.Get("Location") != "" {
+							t.Fatalf("did not expect redirect location, got %q", resp.Header.Get("Location"))
+						}
+					})
+				}
+			})
 		}
 	})
 

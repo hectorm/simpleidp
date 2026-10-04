@@ -37,7 +37,7 @@ var oauth21Sections = []specSection{
 	{Spec: "OAuth 2.1", Section: "2.4.2", Title: "Other Authentication Methods", Notes: "Other client authentication methods are not implemented."},
 	{Spec: "OAuth 2.1", Section: "2.5", Title: "Unregistered Clients", Notes: "Rejection of unregistered clients is covered by section 2.2."},
 	{Spec: "OAuth 2.1", Section: "3", Title: "Protocol Endpoints", Notes: "Covered by the applicable subsections below."},
-	{Spec: "OAuth 2.1", Section: "3.1", Title: "Authorization Endpoint", Applicable: true, Notes: "Rejection of duplicate recognized parameters and ignoring repeated unrecognized parameters in GET and POST requests are covered by OIDC Core 1.0 section 3.1.2.2.", Run: testOAuth21AuthorizationEndpoint},
+	{Spec: "OAuth 2.1", Section: "3.1", Title: "Authorization Endpoint", Applicable: true, Notes: "Rejection of duplicate recognized parameters and ignoring repeated unrecognized parameters in GET and POST requests are covered by OIDC Core 1.0 section 3.1.2.2. Response parameters appearing at most once are covered by sections 4.1.2 and 4.1.2.1.", Run: testOAuth21AuthorizationEndpoint},
 	{Spec: "OAuth 2.1", Section: "3.2", Title: "Token Endpoint", Notes: "Covered by the applicable subsections below; CORS is not implemented. Rejection of duplicate recognized parameters and ignoring repeated unrecognized parameters across supported grants are covered by section 3.2.4."},
 	{Spec: "OAuth 2.1", Section: "3.2.1", Title: "Client Authentication", Applicable: true, Run: testClientAuthentication},
 	{Spec: "OAuth 2.1", Section: "3.2.2", Title: "Token Endpoint Request", Applicable: true, Run: testTokenRequest},

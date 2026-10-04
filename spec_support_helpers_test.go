@@ -383,6 +383,9 @@ func verifyLogoutToken(t *testing.T, provider *providerProcess, rawToken string)
 		t.Fatalf("expected a single jwk, got %#v", jwks.Keys)
 	}
 	header := decodeJWTHeader(t, rawToken)
+	if header.Alg != "RS256" {
+		t.Fatalf("signing algorithm mismatch: got %q, want %q", header.Alg, "RS256")
+	}
 	if header.Kid == "" || header.Kid != jwks.Keys[0].KeyID {
 		t.Fatalf("kid mismatch: got %q, want %q", header.Kid, jwks.Keys[0].KeyID)
 	}
