@@ -29,22 +29,22 @@ All configuration is done through environment variables. At least one client and
 
 ### General
 
-| Variable                            | Description                                                      |
-| ----------------------------------- | ---------------------------------------------------------------- |
-| `SIMPLE_IDP_LISTEN`                 | Listen address (default `:8227`)                                 |
-| `SIMPLE_IDP_ISSUER`                 | Issuer URL as seen by clients (required)                         |
-| `SIMPLE_IDP_TITLE`                  | Login page title (default `Simple IdP`)                          |
-| `SIMPLE_IDP_ACCENT_COLOR`           | Accent color for the pages (default `oklch(49% 0.19 264)`)       |
-| `SIMPLE_IDP_FAVICON`                | Favicon URL or data URI (default: blank icon)                    |
-| `SIMPLE_IDP_EDIT_PROFILE`           | Let users edit their profile, not persisted (default `false`)    |
-| `SIMPLE_IDP_SESSION_IDLE_TTL`       | Session idle timeout (default `30m`)                             |
-| `SIMPLE_IDP_SESSION_MAX_TTL`        | Session maximum lifetime (default `10h`)                         |
-| `SIMPLE_IDP_ACCESS_TOKEN_TTL`       | Access and ID token lifetime (default `5m`)                      |
-| `SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL` | Refresh token idle timeout (default `30m`)                       |
-| `SIMPLE_IDP_REFRESH_TOKEN_MAX_TTL`  | Refresh token maximum lifetime (default `10h`)                   |
-| `SIMPLE_IDP_KEY_ID`                 | JWKS key ID (default `simple-idp`)                               |
-| `SIMPLE_IDP_KEY_FILE`               | PEM file for PKCS8 RSA private key; generated in memory if empty |
-| `SIMPLE_IDP_KEY_B64`                | Base64-encoded PKCS8 RSA private key (alternative to `KEY_FILE`) |
+| Variable                            | Description                                                       |
+| ----------------------------------- | ----------------------------------------------------------------- |
+| `SIMPLE_IDP_LISTEN`                 | Listen address (default `:8227`)                                  |
+| `SIMPLE_IDP_ISSUER`                 | Issuer URL as seen by clients (required)                          |
+| `SIMPLE_IDP_TITLE`                  | Login page title (default `Simple IdP`)                           |
+| `SIMPLE_IDP_ACCENT_COLOR`           | Accent color for the pages (default `oklch(49% 0.19 264)`)        |
+| `SIMPLE_IDP_FAVICON`                | Favicon URL or data URI (default: blank icon)                     |
+| `SIMPLE_IDP_EDIT_PROFILE`           | Let users edit their profile, not persisted (default `false`)     |
+| `SIMPLE_IDP_SESSION_IDLE_TTL`       | Session idle timeout (default `30m`)                              |
+| `SIMPLE_IDP_SESSION_MAX_TTL`        | Session maximum lifetime (default `10h`)                          |
+| `SIMPLE_IDP_ACCESS_TOKEN_TTL`       | Access and ID token lifetime (default `5m`)                       |
+| `SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL` | Refresh token idle timeout (default `30m`)                        |
+| `SIMPLE_IDP_REFRESH_TOKEN_MAX_TTL`  | Refresh token maximum lifetime (default `10h`)                    |
+| `SIMPLE_IDP_KEY_ID`                 | JWKS key ID (default `simple-idp`)                                |
+| `SIMPLE_IDP_KEY_FILE`               | PEM file for PKCS8 RSA private key (generated in memory if empty) |
+| `SIMPLE_IDP_KEY_B64`                | Base64-encoded PKCS8 RSA private key (alternative to `KEY_FILE`)  |
 
 ### Clients
 

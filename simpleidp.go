@@ -17,7 +17,7 @@
 // SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL - refresh token idle timeout (default: "30m")
 // SIMPLE_IDP_REFRESH_TOKEN_MAX_TTL  - refresh token maximum lifetime (default: "10h")
 // SIMPLE_IDP_KEY_ID                 - JWKS key ID (default: "simple-idp")
-// SIMPLE_IDP_KEY_FILE               - PEM file for PKCS8 RSA private key; generated in memory if empty
+// SIMPLE_IDP_KEY_FILE               - PEM file for PKCS8 RSA private key (generated in memory if empty)
 // SIMPLE_IDP_KEY_B64                - base64-encoded PKCS8 RSA private key (alternative to KEY_FILE)
 //
 // Clients are configured with a label prefix (the label is arbitrary, used only for grouping):
@@ -258,6 +258,9 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 	accessTokenTTL, err := envDuration(lookupEnv, "SIMPLE_IDP_ACCESS_TOKEN_TTL", 5*time.Minute)
 	if err != nil {
 		return "", nil, err
+	}
+	if accessTokenTTL%time.Second != 0 {
+		return "", nil, errors.New("SIMPLE_IDP_ACCESS_TOKEN_TTL: must be a whole number of seconds")
 	}
 	refreshTokenIdleTTL, err := envDuration(lookupEnv, "SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL", 30*time.Minute)
 	if err != nil {
@@ -1677,19 +1680,19 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 	}
 
 	user, _ := p.lookupUser(pendingCode.userLabel)
-	accessTokenValue, err := p.mintAccessToken(client, user, pendingCode.scope)
+	issuedAt := time.Now()
+	accessTokenValue, err := p.mintAccessToken(client, user, pendingCode.scope, issuedAt)
 	if err != nil {
 		http.Error(w, "Failed to mint access token", http.StatusInternalServerError)
 		return
 	}
 	refreshTokenValue := rand.Text()
-	idToken, err := p.mintIDToken(user, client, pendingCode, accessTokenValue)
+	idToken, err := p.mintIDToken(user, client, pendingCode, accessTokenValue, issuedAt)
 	if err != nil {
 		http.Error(w, "Failed to mint ID token", http.StatusInternalServerError)
 		return
 	}
 
-	issuedAt := time.Now()
 	p.mu.Lock()
 	currentSession, sessionKnown := p.sessions[pendingCode.sessionID]
 	sessionKnown = sessionKnown && !p.isSessionExpired(currentSession, time.Now())
@@ -1707,7 +1710,7 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 		scope:     pendingCode.scope,
 		code:      code,
 		sessionID: pendingCode.sessionID,
-		expiry:    issuedAt.Add(p.accessTokenTTL),
+		expiry:    issuedAt.Truncate(time.Second).Add(p.accessTokenTTL),
 	}
 	p.refreshTokens[refreshTokenValue] = refreshToken{
 		clientID:         client.id,
@@ -1773,7 +1776,8 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 	}
 
 	user, _ := p.lookupUser(storedRefreshToken.userLabel)
-	newAccessTokenValue, err := p.mintAccessToken(client, user, effectiveAccessScope)
+	issuedAt := time.Now()
+	newAccessTokenValue, err := p.mintAccessToken(client, user, effectiveAccessScope, issuedAt)
 	if err != nil {
 		http.Error(w, "Failed to mint access token", http.StatusInternalServerError)
 		return
@@ -1786,14 +1790,13 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 			scope:           effectiveAccessScope,
 			sessionID:       storedRefreshToken.sessionID,
 			authenticatedAt: storedRefreshToken.authenticatedAt,
-		}, newAccessTokenValue)
+		}, newAccessTokenValue, issuedAt)
 		if err != nil {
 			http.Error(w, "Failed to mint ID token", http.StatusInternalServerError)
 			return
 		}
 	}
 
-	issuedAt := time.Now()
 	p.mu.Lock()
 	if latest, ok := p.refreshTokens[refreshTokenValue]; !ok || !latest.consumedAt.IsZero() {
 		p.revokeGrant(storedRefreshToken.code)
@@ -1809,7 +1812,7 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 		scope:     effectiveAccessScope,
 		code:      storedRefreshToken.code,
 		sessionID: storedRefreshToken.sessionID,
-		expiry:    issuedAt.Add(p.accessTokenTTL),
+		expiry:    issuedAt.Truncate(time.Second).Add(p.accessTokenTTL),
 	}
 	p.refreshTokens[newRefreshTokenValue] = refreshToken{
 		clientID:         client.id,
@@ -1849,7 +1852,8 @@ func (p *identityProvider) exchangeClientCredentials(w http.ResponseWriter, r *h
 	}
 	scope := strings.Join(scopes, " ")
 
-	accessTokenValue, err := p.mintAccessToken(client, user{}, scope)
+	issuedAt := time.Now()
+	accessTokenValue, err := p.mintAccessToken(client, user{}, scope, issuedAt)
 	if err != nil {
 		http.Error(w, "Failed to mint access token", http.StatusInternalServerError)
 		return
@@ -1859,7 +1863,7 @@ func (p *identityProvider) exchangeClientCredentials(w http.ResponseWriter, r *h
 	p.accessTokens[accessTokenValue] = accessToken{
 		clientID: client.id,
 		scope:    scope,
-		expiry:   time.Now().Add(p.accessTokenTTL),
+		expiry:   issuedAt.Truncate(time.Second).Add(p.accessTokenTTL),
 	}
 	p.removeExpiredState()
 	p.mu.Unlock()
@@ -2264,16 +2268,14 @@ func (p *identityProvider) resolveBearerToken(token string) (user, accessToken, 
 
 // -------------------------------------------------------------------------- //
 
-func (p *identityProvider) mintAccessToken(client client, user user, scope string) (string, error) {
-	now := time.Now().Unix()
-
+func (p *identityProvider) mintAccessToken(client client, user user, scope string, issuedAt time.Time) (string, error) {
 	payload := map[string]any{
 		"iss":       p.issuer,
 		"sub":       client.id,
 		"aud":       client.audience,
 		"client_id": client.id,
-		"iat":       now,
-		"exp":       now + int64(p.accessTokenTTL.Seconds()),
+		"iat":       issuedAt.Unix(),
+		"exp":       issuedAt.Add(p.accessTokenTTL).Unix(),
 		"jti":       rand.Text(),
 	}
 	if scope != "" {
@@ -2286,16 +2288,14 @@ func (p *identityProvider) mintAccessToken(client client, user user, scope strin
 	return p.signJWT("at+jwt", payload)
 }
 
-func (p *identityProvider) mintIDToken(user user, client client, code pendingCode, accessToken string) (string, error) {
-	now := time.Now().Unix()
-
+func (p *identityProvider) mintIDToken(user user, client client, code pendingCode, accessToken string, issuedAt time.Time) (string, error) {
 	atHash := sha256.Sum256([]byte(accessToken))
 	payload := map[string]any{
 		"iss":       p.issuer,
 		"sub":       user.sub,
 		"aud":       client.id,
-		"iat":       now,
-		"exp":       now + int64(p.accessTokenTTL.Seconds()),
+		"iat":       issuedAt.Unix(),
+		"exp":       issuedAt.Add(p.accessTokenTTL).Unix(),
 		"auth_time": code.authenticatedAt.Unix(),
 		"at_hash":   base64.RawURLEncoding.EncodeToString(atHash[:len(atHash)/2]),
 	}

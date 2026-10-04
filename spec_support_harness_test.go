@@ -94,6 +94,9 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 	if config.AccessTokenTTL != 0 {
 		env = append(env, "SIMPLE_IDP_ACCESS_TOKEN_TTL="+config.AccessTokenTTL.String())
 	}
+	if config.RefreshTokenIdleTTL != 0 {
+		env = append(env, "SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL="+config.RefreshTokenIdleTTL.String())
+	}
 	for _, client := range config.Clients {
 		prefix := "SIMPLE_IDP_CLIENT_" + client.Label + "_"
 		env = append(env,
@@ -906,6 +909,19 @@ func (p *providerProcess) ageConsumedAuthorizationCode(t *testing.T, code string
 	pending.consumedAt = time.Now().Add(-age)
 	pending.createdAt = pending.consumedAt
 	p.idp.pendingCodes[code] = pending
+}
+
+func (p *providerProcess) accessTokenExpiry(t *testing.T, token string) time.Time {
+	t.Helper()
+
+	p.idp.mu.Lock()
+	defer p.idp.mu.Unlock()
+
+	accessToken, ok := p.idp.accessTokens[token]
+	if !ok {
+		t.Fatalf("access token %q not found", token)
+	}
+	return accessToken.expiry
 }
 
 func (p *providerProcess) expireAccessToken(t *testing.T, token string) {

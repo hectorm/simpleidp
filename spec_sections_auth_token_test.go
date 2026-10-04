@@ -1534,6 +1534,33 @@ func testRefreshTokenRecommendations(t *testing.T) {
 		}
 	})
 
+	t.Run("measures inactivity from the precise issue time", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.RefreshTokenIdleTTL = 500 * time.Millisecond
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("refresh-token-precise-issue-time")
+		authorization := authorizeAndLogin(t, provider, request)
+
+		time.Sleep((1600*time.Millisecond - time.Duration(time.Now().Nanosecond())) % time.Second)
+		token := exchangeAuthorizationCode(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         authorization.Code,
+			RedirectURI:  request.RedirectURI,
+			CodeVerifier: request.Verifier,
+		})
+		rotatedToken := exchangeRefreshToken(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			RefreshToken: token.RefreshToken,
+		})
+		_ = exchangeRefreshToken(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			RefreshToken: rotatedToken.RefreshToken,
+		})
+	})
+
 	t.Run("expires refresh tokens after the client session max", func(t *testing.T) {
 		provider := startProvider(t, defaultProviderConfig())
 		request := newDefaultConfidentialAuthorizationRequest("refresh-token-session-max")

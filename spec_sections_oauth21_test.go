@@ -7,6 +7,7 @@ import (
 	"encoding/json/v2"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -604,19 +605,75 @@ func testOAuth21IssueShortLivedBearerTokens(t *testing.T) {
 	config := defaultProviderConfig()
 	config.AccessTokenTTL = 30 * time.Second
 	provider := startProvider(t, config)
-	request := newDefaultConfidentialAuthorizationRequest("oauth21-short-lived-tokens")
-	token := authorizeAndExchange(t, provider, request, tokenRequest{
-		ClientID:     request.ClientID,
-		ClientSecret: webClientSecret,
-		CodeVerifier: request.Verifier,
-	})
 
-	if token.ExpiresIn <= 0 {
-		t.Fatalf("expected positive expires_in, got %d", token.ExpiresIn)
+	for _, grantType := range []string{"authorization_code", "refresh_token", "client_credentials"} {
+		t.Run(grantType, func(t *testing.T) {
+			var token tokenResponse
+			if grantType == "client_credentials" {
+				token = exchangeClientCredentials(t, provider, tokenRequest{
+					ClientID:     webClientID,
+					ClientSecret: webClientSecret,
+				})
+			} else {
+				request := newDefaultConfidentialAuthorizationRequest("short-lived-tokens-" + grantType)
+				token = authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					CodeVerifier: request.Verifier,
+				})
+				if grantType == "refresh_token" {
+					token = exchangeRefreshToken(t, provider, tokenRequest{
+						ClientID:     webClientID,
+						ClientSecret: webClientSecret,
+						RefreshToken: token.RefreshToken,
+					})
+				}
+			}
+
+			if token.ExpiresIn != int(config.AccessTokenTTL.Seconds()) {
+				t.Fatalf("expires_in mismatch: got %d, want %d", token.ExpiresIn, int(config.AccessTokenTTL.Seconds()))
+			}
+			claims := verifyAccessToken(t, provider, token.AccessToken)
+			if claims.Exp-claims.Iat != int64(token.ExpiresIn) {
+				t.Fatalf("access token lifetime mismatch: got %d, want %d", claims.Exp-claims.Iat, token.ExpiresIn)
+			}
+			if expiry := provider.accessTokenExpiry(t, token.AccessToken); !expiry.Equal(time.Unix(claims.Exp, 0)) {
+				t.Fatalf("stored expiry mismatch: got %s, want %s", expiry, time.Unix(claims.Exp, 0))
+			}
+			if grantType != "client_credentials" {
+				if idClaims := verifyIDToken(t, provider, token.IDToken); idClaims.Iat != claims.Iat || idClaims.Exp != claims.Exp {
+					t.Fatalf("access and ID token timestamps differ: access=(%d, %d), id=(%d, %d)", claims.Iat, claims.Exp, idClaims.Iat, idClaims.Exp)
+				}
+			}
+		})
 	}
-	if token.ExpiresIn != int(config.AccessTokenTTL.Seconds()) {
-		t.Fatalf("expires_in mismatch: got %d, want %d", token.ExpiresIn, int(config.AccessTokenTTL.Seconds()))
-	}
+
+	t.Run("rejects lifetimes that are not whole seconds", func(t *testing.T) {
+		for _, lifetime := range []string{"1ns", "500ms", "1500ms"} {
+			t.Run(lifetime, func(t *testing.T) {
+				environ := []string{
+					"SIMPLE_IDP_ISSUER=http://127.0.0.1",
+					"SIMPLE_IDP_CLIENT_WEB_ID=" + webClientID,
+					"SIMPLE_IDP_CLIENT_WEB_SECRET=" + webClientSecret,
+					"SIMPLE_IDP_USER_ALICE_USERNAME=" + testUsername,
+					"SIMPLE_IDP_USER_ALICE_PASSWORD=" + testPassword,
+					"SIMPLE_IDP_ACCESS_TOKEN_TTL=" + lifetime,
+				}
+				_, _, err := newIdentityProvider(environ, func(name string) string {
+					for _, item := range environ {
+						key, value, _ := strings.Cut(item, "=")
+						if key == name {
+							return value
+						}
+					}
+					return ""
+				}, os.ReadFile)
+				if err == nil || !strings.Contains(err.Error(), "whole number of seconds") {
+					t.Fatalf("expected whole-second lifetime error, got %v", err)
+				}
+			})
+		}
+	})
 }
 
 func testOAuth21AccessTokenScope(t *testing.T) {
