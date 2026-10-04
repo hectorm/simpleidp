@@ -325,8 +325,9 @@ func (p *providerProcess) postToken(t *testing.T, request tokenRequest) *http.Re
 func (p *providerProcess) postIntrospect(t *testing.T, request introspectionRequest) *http.Response {
 	t.Helper()
 
-	form := url.Values{
-		"token": {request.Token},
+	form := url.Values{}
+	if request.Token != "" {
+		form.Set("token", request.Token)
 	}
 	if request.TokenTypeHint != "" {
 		form.Set("token_type_hint", request.TokenTypeHint)

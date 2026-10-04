@@ -47,6 +47,18 @@ func testIntrospectionRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects an empty token parameter", func(t *testing.T) {
+		form := url.Values{
+			"client_id":     {webClientID},
+			"client_secret": {webClientSecret},
+			"token":         {""},
+		}
+		errResp := expectJSONError(t, provider.postFormURL(t, provider.endpoint("/introspect"), form, "", false), http.StatusBadRequest)
+		if errResp.Error != "invalid_request" {
+			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_request")
+		}
+	})
+
 	t.Run("rejects duplicate token parameters", func(t *testing.T) {
 		form := url.Values{
 			"token": {"first", "second"},

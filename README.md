@@ -8,7 +8,7 @@ I need an IdP for local development and integration testing. Keycloak is more th
 
 ## Endpoints
 
-All endpoints are derived from the issuer URL:
+The identity provider endpoints are derived from the issuer URL:
 
 | Endpoint      | URL                                         |
 | ------------- | ------------------------------------------- |
@@ -22,6 +22,8 @@ All endpoints are derived from the issuer URL:
 | Introspection | `<ISSUER>/introspect`                       |
 | Revocation    | `<ISSUER>/revoke`                           |
 | End session   | `<ISSUER>/end-session`                      |
+
+The healthcheck endpoint is always served at `/healthz`, regardless of the issuer path.
 
 ## Configuration
 

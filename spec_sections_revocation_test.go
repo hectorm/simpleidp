@@ -49,6 +49,18 @@ func testRevocationRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects an empty token parameter", func(t *testing.T) {
+		form := url.Values{
+			"client_id":     {webClientID},
+			"client_secret": {webClientSecret},
+			"token":         {""},
+		}
+		errResp := expectJSONError(t, provider.postFormURL(t, provider.endpoint("/revoke"), form, "", false), http.StatusBadRequest)
+		if errResp.Error != "invalid_request" {
+			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_request")
+		}
+	})
+
 	t.Run("rejects duplicate token parameters", func(t *testing.T) {
 		form := url.Values{
 			"token": {"first", "second"},
@@ -79,24 +91,51 @@ func testRevocationRequest(t *testing.T) {
 		}
 	})
 
-	t.Run("accepts a refresh token with token_type_hint", func(t *testing.T) {
-		request := newDefaultConfidentialAuthorizationRequest("revoke-refresh-token-hint")
-		token := authorizeAndExchange(t, provider, request, tokenRequest{
-			ClientID:     request.ClientID,
-			ClientSecret: webClientSecret,
-			CodeVerifier: request.Verifier,
-		})
+	t.Run("revokes refresh tokens regardless of the token_type_hint", func(t *testing.T) {
+		for _, authMethod := range []string{"client_secret_basic", authMethodClientSecretPost} {
+			t.Run(authMethod, func(t *testing.T) {
+				for _, hint := range []string{"", "refresh_token", "access_token", "totally-unknown"} {
+					t.Run("hint="+hint, func(t *testing.T) {
+						request := newDefaultConfidentialAuthorizationRequest("revoke-refresh-token-hint")
+						token := authorizeAndExchange(t, provider, request, tokenRequest{
+							ClientID:     request.ClientID,
+							ClientSecret: webClientSecret,
+							CodeVerifier: request.Verifier,
+						})
+						owner := introspectionRequest{
+							ClientID:     webClientID,
+							ClientSecret: webClientSecret,
+							Token:        token.RefreshToken,
+						}
+						if !introspectToken(t, provider, owner).Active {
+							t.Fatal("expected an active refresh token before revocation")
+						}
 
-		resp := postRevoke(t, provider, revocationRequest{
-			ClientID:      webClientID,
-			ClientSecret:  webClientSecret,
-			Token:         token.RefreshToken,
-			TokenTypeHint: "refresh_token",
-		})
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("revocation status mismatch: got %s, want %d", resp.Status, http.StatusOK)
+						resp := postRevoke(t, provider, revocationRequest{
+							ClientID:      webClientID,
+							ClientSecret:  webClientSecret,
+							AuthMethod:    authMethod,
+							Token:         token.RefreshToken,
+							TokenTypeHint: hint,
+						})
+						body := readBody(t, resp)
+						if resp.StatusCode != http.StatusOK {
+							t.Fatalf("revocation status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+						}
+						expectInactiveIntrospectionResponse(t, provider.postIntrospect(t, owner))
+						errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
+							ClientID:     webClientID,
+							ClientSecret: webClientSecret,
+							GrantType:    "refresh_token",
+							RefreshToken: token.RefreshToken,
+						}), http.StatusBadRequest)
+						if errResp.Error != "invalid_grant" {
+							t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_grant")
+						}
+					})
+				}
+			})
 		}
-		_ = readBody(t, resp)
 	})
 
 	t.Run("does not rely on token_type_hint when looking up tokens", func(t *testing.T) {

@@ -9,7 +9,7 @@ var rfc7009Sections = []specSection{
 	{Spec: "RFC 7009", Section: "1", Title: "Introduction", Notes: "Introductory material is not a test target."},
 	{Spec: "RFC 7009", Section: "1.1", Title: "Requirements Language", Notes: "Notation guidance is not a test target."},
 	{Spec: "RFC 7009", Section: "2", Title: "Token Revocation", Applicable: true, Notes: "TLS is out of scope.", Run: testRevocationEndpoint},
-	{Spec: "RFC 7009", Section: "2.1", Title: "Revocation Request", Applicable: true, Run: testRevocationRequest},
+	{Spec: "RFC 7009", Section: "2.1", Title: "Revocation Request", Applicable: true, Notes: "Missing, empty, and duplicate token parameters and malformed request bodies are rejected; both token types are found despite incorrect or unknown hints.", Run: testRevocationRequest},
 	{Spec: "RFC 7009", Section: "2.2", Title: "Revocation Response", Applicable: true, Notes: "Revoking a refresh token also revokes the access tokens of its grant.", Run: testRevocationResponse},
 	{Spec: "RFC 7009", Section: "2.2.1", Title: "Error Response", Applicable: true, Run: testRevocationErrorResponse},
 	{Spec: "RFC 7009", Section: "2.3", Title: "Cross-Origin Support", Notes: "CORS and JSONP are not implemented."},

@@ -995,20 +995,7 @@ func testSuccessfulAuthenticationResponse(t *testing.T) {
 		t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
 	}
 
-	redirect := expectRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther)
-	assertRedirectTarget(t, redirect, request.RedirectURI)
-	assertAuthorizationResponseMetadata(t, redirect, request.State, provider.issuer)
-	if got := redirect.Query().Get("code"); got == "" {
-		t.Fatalf("expected code, got %q", redirect.String())
-	}
-	if redirect.Fragment != "" {
-		t.Fatalf("did not expect redirect fragment, got %q", redirect.String())
-	}
-	for _, unexpected := range []string{"access_token", "id_token", "token_type"} {
-		if got := redirect.Query().Get(unexpected); got != "" {
-			t.Fatalf("did not expect %s in redirect, got %q", unexpected, redirect.String())
-		}
-	}
+	expectAuthorizationCodeRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
 }
 
 func testAuthenticationErrorResponse(t *testing.T) {

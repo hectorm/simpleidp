@@ -29,14 +29,27 @@ func testBackChannelLogout(t *testing.T) {
 		}
 	})
 
-	t.Run("does not send a logout token to clients without a back-channel logout URI", func(t *testing.T) {
-		receiver, _ := startBackchannelLogoutReceiver(t)
-		provider := startProvider(t, defaultProviderConfig())
+	t.Run("only notifies logged-in clients with a back-channel logout URI", func(t *testing.T) {
+		receiver, receiverURL := startBackchannelLogoutReceiver(t)
+		config := defaultProviderConfig()
+		config.Clients[1].BackchannelLogoutURI = receiverURL
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("logout-without-backchannel-uri")
+		request.ClientID = otherClientID
+		request.RedirectURI = otherClientRedirect
+		_ = authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: otherClientSecret,
+			CodeVerifier: request.Verifier,
+		})
 		performLogoutWithBackchannel(t, provider)
 
 		requests := receiver.receivedRequests()
-		if len(requests) != 0 {
-			t.Fatalf("expected 0 backchannel logout requests, got %d", len(requests))
+		if len(requests) != 1 {
+			t.Fatalf("expected 1 backchannel logout request for the configured RP, got %d", len(requests))
+		}
+		if claims := verifyLogoutToken(t, provider, requests[0].rawToken); claims.Aud != otherClientID {
+			t.Fatalf("expected only %q to be notified, got audience %q", otherClientID, claims.Aud)
 		}
 	})
 
@@ -797,6 +810,7 @@ func testBackChannelLogoutToken(t *testing.T) {
 	t.Run("logout token contains required claims", func(t *testing.T) {
 		receiver, receiverURL := startBackchannelLogoutReceiver(t)
 		provider := startProvider(t, backchannelProviderConfig(receiverURL, false))
+		issuedAfter := time.Now().Unix()
 		performLogoutWithBackchannel(t, provider)
 
 		requests := receiver.receivedRequests()
@@ -811,12 +825,15 @@ func testBackChannelLogoutToken(t *testing.T) {
 		if claims.Sub != testSubject {
 			t.Fatalf("sub mismatch: got %q, want %q", claims.Sub, testSubject)
 		}
+		if claims.Sid == "" {
+			t.Fatal("expected the provider to include sid even when the RP does not require it")
+		}
 		if claims.Aud != webClientID {
 			t.Fatalf("aud mismatch: got %q, want %q", claims.Aud, webClientID)
 		}
 		now := time.Now().Unix()
-		if claims.Iat <= 0 || claims.Iat > now {
-			t.Fatalf("iat must identify an issuance time at or before now, got %d", claims.Iat)
+		if claims.Iat < issuedAfter || claims.Iat > now {
+			t.Fatalf("iat must identify the logout token issuance time, got %d, want between %d and %d", claims.Iat, issuedAfter, now)
 		}
 		if claims.Exp <= now {
 			t.Fatalf("exp must be in the future, got %d", claims.Exp)
@@ -827,8 +844,8 @@ func testBackChannelLogoutToken(t *testing.T) {
 		if claims.Events == nil {
 			t.Fatal("events claim must be present")
 		}
-		if event, ok := claims.Events["http://schemas.openid.net/event/backchannel-logout"].(map[string]any); !ok || event == nil {
-			t.Fatalf("events claim must contain a backchannel-logout JSON object: %#v", claims.Events)
+		if event, ok := claims.Events["http://schemas.openid.net/event/backchannel-logout"].(map[string]any); !ok || event == nil || len(event) != 0 {
+			t.Fatalf("expected the recommended empty backchannel-logout JSON object: %#v", claims.Events)
 		}
 	})
 
@@ -1070,35 +1087,37 @@ func testBackChannelLogoutResponse(t *testing.T) {
 		}
 	})
 
-	t.Run("completes logout even when the back-channel endpoint returns HTTP 400", func(t *testing.T) {
-		var received atomic.Int64
-		listener, err := listenLocal(t)
-		if err != nil {
-			t.Fatalf("failed to open listener: %v", err)
-		}
-		addr := listener.Addr().String()
-		mux := http.NewServeMux()
-		mux.HandleFunc("POST /backchannel-logout", func(w http.ResponseWriter, r *http.Request) {
-			received.Add(1)
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+	for _, status := range []int{http.StatusBadRequest, http.StatusServiceUnavailable} {
+		t.Run("completes logout without retrying after "+http.StatusText(status), func(t *testing.T) {
+			var received atomic.Int64
+			listener, err := listenLocal(t)
+			if err != nil {
+				t.Fatalf("failed to open listener: %v", err)
+			}
+			addr := listener.Addr().String()
+			mux := http.NewServeMux()
+			mux.HandleFunc("POST /backchannel-logout", func(w http.ResponseWriter, r *http.Request) {
+				received.Add(1)
+				w.WriteHeader(status)
+			})
+			srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+			go func() { _ = srv.Serve(listener) }()
+			t.Cleanup(func() { _ = srv.Close() })
+
+			receiverURL := "http://" + addr + "/backchannel-logout"
+			provider := startProvider(t, backchannelProviderConfig(receiverURL, false))
+			token := performLogoutWithBackchannel(t, provider)
+			if received.Load() != 1 {
+				t.Fatal("expected the RP to receive a back-channel logout request")
+			}
+
+			userInfoResp := provider.getUserInfoResponse(t, token.AccessToken)
+			body := readBody(t, userInfoResp)
+			if userInfoResp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", userInfoResp.Status, http.StatusUnauthorized, body)
+			}
 		})
-		srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-		go func() { _ = srv.Serve(listener) }()
-		t.Cleanup(func() { _ = srv.Close() })
-
-		receiverURL := "http://" + addr + "/backchannel-logout"
-		provider := startProvider(t, backchannelProviderConfig(receiverURL, false))
-		token := performLogoutWithBackchannel(t, provider)
-		if received.Load() != 1 {
-			t.Fatal("expected the RP to receive a back-channel logout request")
-		}
-
-		userInfoResp := provider.getUserInfoResponse(t, token.AccessToken)
-		body := readBody(t, userInfoResp)
-		if userInfoResp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", userInfoResp.Status, http.StatusUnauthorized, body)
-		}
-	})
+	}
 
 	t.Run("completes logout without following redirects from the back-channel endpoint", func(t *testing.T) {
 		for _, status := range []int{http.StatusSeeOther, http.StatusTemporaryRedirect} {
