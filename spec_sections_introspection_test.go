@@ -208,6 +208,9 @@ func testIntrospectionResponse(t *testing.T) {
 		if response.Exp <= time.Now().Unix() {
 			t.Fatalf("expected exp in the future, got %d", response.Exp)
 		}
+		if want := verifyAccessToken(t, provider, token.AccessToken).Exp; response.Exp != want {
+			t.Fatalf("expiration mismatch: got %d, want %d from the access token", response.Exp, want)
+		}
 		if response.Iss != provider.issuer {
 			t.Fatalf("issuer mismatch: got %q, want %q", response.Iss, provider.issuer)
 		}
@@ -270,6 +273,45 @@ func testIntrospectionResponse(t *testing.T) {
 		})
 		expectInactiveIntrospectionResponse(t, resp)
 	})
+
+	t.Run("reports the earlier refresh token idle or maximum expiration", func(t *testing.T) {
+		for _, limit := range []string{"idle", "maximum"} {
+			t.Run(limit, func(t *testing.T) {
+				request := newDefaultConfidentialAuthorizationRequest("introspection-refresh-expiration-" + limit)
+				token := authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					CodeVerifier: request.Verifier,
+				})
+				expiry := time.Now().Truncate(time.Second).Add(5 * time.Minute)
+				idleExpiry, maxExpiry := expiry, expiry.Add(time.Minute)
+				if limit == "maximum" {
+					idleExpiry, maxExpiry = maxExpiry, idleExpiry
+				}
+
+				provider.idp.mu.Lock()
+				stored, ok := provider.idp.refreshTokens[token.RefreshToken]
+				if ok {
+					stored.createdAt = idleExpiry.Add(-provider.idp.refreshTokenIdleTTL)
+					stored.sessionStartedAt = maxExpiry.Add(-provider.idp.refreshTokenMaxTTL)
+					provider.idp.refreshTokens[token.RefreshToken] = stored
+				}
+				provider.idp.mu.Unlock()
+				if !ok {
+					t.Fatal("issued refresh token was not stored")
+				}
+
+				response := introspectToken(t, provider, introspectionRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					Token:        token.RefreshToken,
+				})
+				if !response.Active || response.Exp != expiry.Unix() {
+					t.Fatalf("expected active refresh token exp=%d, got %#v", expiry.Unix(), response)
+				}
+			})
+		}
+	})
 }
 
 func testIntrospectionErrorResponse(t *testing.T) {
@@ -331,6 +373,42 @@ func testIntrospectionErrorResponse(t *testing.T) {
 func testIntrospectionSecurityConsiderations(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 
+	t.Run("returns only active false for consumed refresh tokens without revoking the grant", func(t *testing.T) {
+		request := newDefaultConfidentialAuthorizationRequest("introspection-consumed-refresh-token")
+		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+		owner := introspectionRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Token:        token.RefreshToken,
+		}
+		if !introspectToken(t, provider, owner).Active {
+			t.Fatal("expected an active refresh token before rotation")
+		}
+		refreshed := exchangeRefreshToken(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			RefreshToken: token.RefreshToken,
+		})
+		if refreshed.RefreshToken == "" || refreshed.RefreshToken == token.RefreshToken {
+			t.Fatal("expected a replacement refresh token")
+		}
+
+		for _, hint := range []string{"", "access_token", "refresh_token"} {
+			owner.TokenTypeHint = hint
+			expectInactiveIntrospectionResponse(t, provider.postIntrospect(t, owner))
+		}
+		for _, value := range []string{token.AccessToken, refreshed.AccessToken, refreshed.RefreshToken} {
+			owner.Token = value
+			if !introspectToken(t, provider, owner).Active {
+				t.Fatal("introspecting a consumed refresh token must preserve the grant's active tokens")
+			}
+		}
+	})
+
 	t.Run("returns only active false for tokens issued to a different client", func(t *testing.T) {
 		request := newDefaultConfidentialAuthorizationRequest("introspection-other-client")
 		token := authorizeAndExchange(t, provider, request, tokenRequest{
@@ -377,20 +455,30 @@ func testIntrospectionSecurityConsiderations(t *testing.T) {
 	})
 
 	t.Run("returns only active false for expired refresh tokens", func(t *testing.T) {
-		request := newDefaultConfidentialAuthorizationRequest("introspection-expired-refresh-token")
-		token := authorizeAndExchange(t, provider, request, tokenRequest{
-			ClientID:     request.ClientID,
-			ClientSecret: webClientSecret,
-			CodeVerifier: request.Verifier,
-		})
-		provider.expireRefreshTokenIdle(t, token.RefreshToken)
-
-		resp := provider.postIntrospect(t, introspectionRequest{
-			ClientID:     request.ClientID,
-			ClientSecret: webClientSecret,
-			Token:        token.RefreshToken,
-		})
-		expectInactiveIntrospectionResponse(t, resp)
+		for _, limit := range []string{"idle", "maximum"} {
+			t.Run(limit, func(t *testing.T) {
+				request := newDefaultConfidentialAuthorizationRequest("introspection-expired-refresh-token-" + limit)
+				token := authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					CodeVerifier: request.Verifier,
+				})
+				owner := introspectionRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					Token:        token.RefreshToken,
+				}
+				if !introspectToken(t, provider, owner).Active {
+					t.Fatal("expected an active refresh token before expiration")
+				}
+				if limit == "idle" {
+					provider.expireRefreshTokenIdle(t, token.RefreshToken)
+				} else {
+					provider.expireRefreshTokenMax(t, token.RefreshToken)
+				}
+				expectInactiveIntrospectionResponse(t, provider.postIntrospect(t, owner))
+			})
+		}
 	})
 
 	t.Run("returns only active false after logout revokes the token", func(t *testing.T) {

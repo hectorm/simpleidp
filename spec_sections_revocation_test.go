@@ -232,9 +232,7 @@ func testRevocationResponse(t *testing.T) {
 				if resp.StatusCode != http.StatusUnauthorized {
 					t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
 				}
-				if got := resp.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="invalid_token"`) {
-					t.Fatalf("expected invalid_token challenge, got %q", got)
-				}
+				assertBearerChallenge(t, resp.Header.Get("WWW-Authenticate"), "invalid_token")
 				if tokenType == "refresh_token" {
 					errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
 						ClientID:     nativeClientID,

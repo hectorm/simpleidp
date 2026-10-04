@@ -70,6 +70,59 @@ func assertTokenResponseHeaders(t *testing.T, resp *http.Response) {
 	assertHeaderDirective(t, resp.Header, "Cache-Control", "no-store")
 }
 
+var bearerChallengeAttributePattern = regexp.MustCompile(`^[ \t]*([!#$%&'*+.^_|~0-9A-Za-z\x60-]+)[ \t]*=[ \t]*("(?:[\t\x20-\x21\x23-\x5b\x5d-\x7e\x80-\x{10ffff}]|\\[\t\x20-\x7e\x80-\x{10ffff}])*"|[!#$%&'*+.^_|~0-9A-Za-z\x60-]+)[ \t]*(,|$)`)
+
+func assertBearerChallenge(t *testing.T, header, errorCode string) map[string]string {
+	t.Helper()
+
+	scheme, remaining, ok := strings.Cut(header, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		t.Fatalf("expected a Bearer challenge, got %q", header)
+	}
+	attributes := map[string]string{}
+	for {
+		match := bearerChallengeAttributePattern.FindStringSubmatch(remaining)
+		if match == nil {
+			t.Fatalf("malformed Bearer challenge attributes in %q", header)
+		}
+		name, value := strings.ToLower(match[1]), match[2]
+		if _, present := attributes[name]; present {
+			t.Fatalf("duplicate Bearer challenge attribute %q in %q", name, header)
+		}
+		if name == "realm" && value[0] != '"' {
+			t.Fatalf("expected a quoted realm in Bearer challenge %q", header)
+		}
+		if value[0] == '"' {
+			value = value[1 : len(value)-1]
+			var decoded strings.Builder
+			for i := 0; i < len(value); i++ {
+				if value[i] == '\\' {
+					i++
+				}
+				decoded.WriteByte(value[i])
+			}
+			value = decoded.String()
+		}
+		attributes[name] = value
+		remaining = remaining[len(match[0]):]
+		if match[3] == "" {
+			break
+		}
+	}
+	if attributes["realm"] != "userinfo" || attributes["error"] != errorCode {
+		t.Fatalf("unexpected Bearer challenge: got %q, want realm=userinfo and error=%q", header, errorCode)
+	}
+	assertOAuthErrorText(t, attributes["error"], attributes["error_description"], attributes["scope"])
+	if errorCode == "" {
+		for _, name := range []string{"error", "error_description", "error_uri"} {
+			if _, present := attributes[name]; present {
+				t.Fatalf("unexpected error information in unauthenticated challenge %q", header)
+			}
+		}
+	}
+	return attributes
+}
+
 func replaceJWTClaims(t *testing.T, provider *providerProcess, token string, claims map[string]any) string {
 	t.Helper()
 

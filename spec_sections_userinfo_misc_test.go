@@ -342,9 +342,7 @@ func testUserInfoErrorResponse(t *testing.T) {
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
 		}
-		if got := resp.Header.Get("WWW-Authenticate"); got != `Bearer realm="userinfo"` {
-			t.Fatalf("unexpected bearer challenge: %q", got)
-		}
+		assertBearerChallenge(t, resp.Header.Get("WWW-Authenticate"), "")
 	})
 
 	t.Run("returns invalid_token for unknown access tokens", func(t *testing.T) {
@@ -353,9 +351,7 @@ func testUserInfoErrorResponse(t *testing.T) {
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
 		}
-		if got := resp.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="invalid_token"`) {
-			t.Fatalf("expected invalid_token challenge, got %q", got)
-		}
+		assertBearerChallenge(t, resp.Header.Get("WWW-Authenticate"), "invalid_token")
 	})
 
 	t.Run("returns insufficient_scope for access tokens without the openid scope", func(t *testing.T) {
@@ -377,8 +373,9 @@ func testUserInfoErrorResponse(t *testing.T) {
 		if resp.StatusCode != http.StatusForbidden {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusForbidden, body)
 		}
-		if got := resp.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="insufficient_scope"`) || !strings.Contains(got, `scope="openid"`) {
-			t.Fatalf("expected insufficient_scope challenge for openid, got %q", got)
+		attributes := assertBearerChallenge(t, resp.Header.Get("WWW-Authenticate"), "insufficient_scope")
+		if attributes["scope"] != "openid" {
+			t.Fatalf("expected insufficient_scope challenge for openid, got %#v", attributes)
 		}
 	})
 
@@ -401,9 +398,7 @@ func testUserInfoErrorResponse(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
 		}
-		if got := resp.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="invalid_request"`) {
-			t.Fatalf("expected invalid_request challenge, got %q", got)
-		}
+		assertBearerChallenge(t, resp.Header.Get("WWW-Authenticate"), "invalid_request")
 	})
 
 	t.Run("returns invalid_request for multiple token transmission methods", func(t *testing.T) {
@@ -418,9 +413,7 @@ func testUserInfoErrorResponse(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
 		}
-		if got := resp.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="invalid_request"`) {
-			t.Fatalf("expected invalid_request challenge, got %q", got)
-		}
+		assertBearerChallenge(t, resp.Header.Get("WWW-Authenticate"), "invalid_request")
 	})
 
 	t.Run("returns invalid_request for malformed userinfo requests", func(t *testing.T) {
@@ -435,9 +428,7 @@ func testUserInfoErrorResponse(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
 		}
-		if got := resp.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="invalid_request"`) {
-			t.Fatalf("expected invalid_request challenge, got %q", got)
-		}
+		assertBearerChallenge(t, resp.Header.Get("WWW-Authenticate"), "invalid_request")
 	})
 
 	t.Run("returns invalid_request for malformed form-encoded bodies", func(t *testing.T) {
@@ -452,9 +443,7 @@ func testUserInfoErrorResponse(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
 		}
-		if got := resp.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="invalid_request"`) {
-			t.Fatalf("expected invalid_request challenge, got %q", got)
-		}
+		assertBearerChallenge(t, resp.Header.Get("WWW-Authenticate"), "invalid_request")
 	})
 }
 

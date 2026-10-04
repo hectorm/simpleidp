@@ -445,9 +445,7 @@ func testOAuth21BearerAuthorizationHeaderField(t *testing.T) {
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
 		}
-		if got := resp.Header.Get("WWW-Authenticate"); got != `Bearer realm="userinfo"` {
-			t.Fatalf("unexpected bearer challenge: %q", got)
-		}
+		assertBearerChallenge(t, resp.Header.Get("WWW-Authenticate"), "")
 	})
 }
 
@@ -497,9 +495,7 @@ func testOAuth21BearerTokenRequests(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
 		}
-		if got := resp.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="invalid_request"`) {
-			t.Fatalf("expected invalid_request challenge, got %q", got)
-		}
+		assertBearerChallenge(t, resp.Header.Get("WWW-Authenticate"), "invalid_request")
 	})
 
 	t.Run("ignores bearer tokens sent in URI query parameters", func(t *testing.T) {
@@ -536,6 +532,7 @@ func testOAuth21AccessTokenValidation(t *testing.T) {
 	if invalid.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", invalid.Status, http.StatusUnauthorized, body)
 	}
+	assertBearerChallenge(t, invalid.Header.Get("WWW-Authenticate"), "invalid_token")
 
 	provider.expireAccessToken(t, token.AccessToken)
 	expired := provider.getUserInfoResponse(t, token.AccessToken)
@@ -543,6 +540,7 @@ func testOAuth21AccessTokenValidation(t *testing.T) {
 	if expired.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", expired.Status, http.StatusUnauthorized, body)
 	}
+	assertBearerChallenge(t, expired.Header.Get("WWW-Authenticate"), "invalid_token")
 }
 
 func testOAuth21WWWAuthenticateResponseHeaderField(t *testing.T) {
@@ -553,17 +551,16 @@ func testOAuth21WWWAuthenticateResponseHeaderField(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
 	}
-	if got := resp.Header.Get("WWW-Authenticate"); got != `Bearer realm="userinfo"` {
-		t.Fatalf("unexpected bearer challenge: %q", got)
-	}
+	assertBearerChallenge(t, resp.Header.Get("WWW-Authenticate"), "")
 
 	invalid := provider.getUserInfoResponse(t, "invalid-access-token")
 	body = readBody(t, invalid)
 	if invalid.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", invalid.Status, http.StatusUnauthorized, body)
 	}
-	if got := invalid.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="invalid_token"`) || !strings.Contains(got, `error_description=`) {
-		t.Fatalf("unexpected bearer challenge: %q", got)
+	attributes := assertBearerChallenge(t, invalid.Header.Get("WWW-Authenticate"), "invalid_token")
+	if attributes["error_description"] == "" {
+		t.Fatalf("expected an error description, got %#v", attributes)
 	}
 }
 
@@ -581,18 +578,14 @@ func testOAuth21ErrorCodes(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
 	}
-	if got := resp.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="invalid_request"`) {
-		t.Fatalf("expected invalid_request challenge, got %q", got)
-	}
+	assertBearerChallenge(t, resp.Header.Get("WWW-Authenticate"), "invalid_request")
 
 	invalid := provider.getUserInfoResponse(t, "invalid-access-token")
 	body = readBody(t, invalid)
 	if invalid.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", invalid.Status, http.StatusUnauthorized, body)
 	}
-	if got := invalid.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="invalid_token"`) {
-		t.Fatalf("expected invalid_token challenge, got %q", got)
-	}
+	assertBearerChallenge(t, invalid.Header.Get("WWW-Authenticate"), "invalid_token")
 
 	refreshed := exchangeRefreshToken(t, provider, tokenRequest{
 		ClientID:     request.ClientID,
@@ -605,9 +598,7 @@ func testOAuth21ErrorCodes(t *testing.T) {
 	if insufficient.StatusCode != http.StatusForbidden {
 		t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", insufficient.Status, http.StatusForbidden, body)
 	}
-	if got := insufficient.Header.Get("WWW-Authenticate"); !strings.Contains(got, `error="insufficient_scope"`) {
-		t.Fatalf("expected insufficient_scope challenge, got %q", got)
-	}
+	assertBearerChallenge(t, insufficient.Header.Get("WWW-Authenticate"), "insufficient_scope")
 }
 
 func testOAuth21DontStoreBearerTokensInHTTPCookies(t *testing.T) {
