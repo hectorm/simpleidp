@@ -864,6 +864,44 @@ func testTokenRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("accepts form-encoded client_secret_basic credentials", func(t *testing.T) {
+		for _, credentials := range []struct {
+			name         string
+			clientID     string
+			clientSecret string
+		}{
+			{"space in client ID", "client id", webClientSecret},
+			{"plus in client ID", "client+id", webClientSecret},
+			{"percent in client ID", "client%2Bid", webClientSecret},
+			{"colon in client ID", "client:id", webClientSecret},
+			{"space in client secret", webClientID, "secret value"},
+			{"plus in client secret", webClientID, "secret+value"},
+			{"percent in client secret", webClientID, "secret%2Bvalue"},
+			{"colon in client secret", webClientID, "secret:value"},
+		} {
+			t.Run(credentials.name, func(t *testing.T) {
+				config := defaultProviderConfig()
+				config.Clients[0].ID = credentials.clientID
+				config.Clients[0].Secret = credentials.clientSecret
+				provider := startProvider(t, config)
+				request := newDefaultConfidentialAuthorizationRequest("token-request-encoded-credentials")
+				request.ClientID = credentials.clientID
+				token := authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: credentials.clientSecret,
+					CodeVerifier: request.Verifier,
+				})
+				if token.AccessToken == "" || token.IDToken == "" {
+					t.Fatalf("expected tokens, got %#v", token)
+				}
+				claims := verifyAccessToken(t, provider, token.AccessToken)
+				if claims.ClientID != request.ClientID {
+					t.Fatalf("client_id mismatch: got %q, want %q", claims.ClientID, request.ClientID)
+				}
+			})
+		}
+	})
+
 	t.Run("accepts client_secret_post for confidential clients", func(t *testing.T) {
 		request := newDefaultConfidentialAuthorizationRequest("token-request-post")
 		token := authorizeAndExchange(t, provider, request, tokenRequest{
@@ -1687,11 +1725,27 @@ func testQuerySerialization(t *testing.T) {
 func testFormSerialization(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 	request := newDefaultConfidentialAuthorizationRequest("form-serialization")
+	request.Nonce = " %&+£€"
 
 	t.Run("accepts authorization requests in form-encoded POST bodies", func(t *testing.T) {
 		body := authorizeByPostExpectLoginPage(t, provider, request)
 		if !strings.Contains(string(body), `method="POST"`) {
 			t.Fatalf("expected form POST login page, got body=%s", body)
+		}
+		redirect := expectRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther)
+		if got := redirect.Query().Get("state"); got != request.State {
+			t.Fatalf("state mismatch: got %q, want %q", got, request.State)
+		}
+		token := exchangeAuthorizationCode(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         redirect.Query().Get("code"),
+			RedirectURI:  request.RedirectURI,
+			CodeVerifier: request.Verifier,
+		})
+		claims := verifyIDToken(t, provider, token.IDToken)
+		if claims.Nonce != request.Nonce {
+			t.Fatalf("nonce mismatch: got %q, want %q", claims.Nonce, request.Nonce)
 		}
 	})
 

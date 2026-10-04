@@ -33,7 +33,7 @@ var oauth21Sections = []specSection{
 	{Spec: "OAuth 2.1", Section: "2.3.5", Title: "Invalid Endpoint", Applicable: true, Run: testOAuth21InvalidEndpoint},
 	{Spec: "OAuth 2.1", Section: "2.3.6", Title: "Endpoint Content", Notes: "This section describes client behavior."},
 	{Spec: "OAuth 2.1", Section: "2.4", Title: "Client Authentication", Applicable: true, Run: testClientAuthentication},
-	{Spec: "OAuth 2.1", Section: "2.4.1", Title: "Client Secret", Applicable: true, Notes: "Brute-force protection for client secrets is not implemented.", Run: testTokenRequest},
+	{Spec: "OAuth 2.1", Section: "2.4.1", Title: "Client Secret", Applicable: true, Notes: "Basic credential form encoding is covered for client IDs and secrets containing spaces, plus signs, percent signs, and colons; brute-force protection for client secrets is not implemented.", Run: testTokenRequest},
 	{Spec: "OAuth 2.1", Section: "2.4.2", Title: "Other Authentication Methods", Notes: "Other client authentication methods are not implemented."},
 	{Spec: "OAuth 2.1", Section: "2.5", Title: "Unregistered Clients", Notes: "Rejection of unregistered clients is covered by section 2.2."},
 	{Spec: "OAuth 2.1", Section: "3", Title: "Protocol Endpoints", Notes: "Covered by the applicable subsections below."},

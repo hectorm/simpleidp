@@ -115,7 +115,7 @@ var oidcCoreSections = []specSection{
 	{Spec: "OIDC Core 1.0", Section: "8.1", Title: "Pairwise Identifier Algorithm", Notes: "Pairwise subject identifiers are not implemented."},
 	{Spec: "OIDC Core 1.0", Section: "9", Title: "Client Authentication", Applicable: true, Run: testClientAuthentication},
 	{Spec: "OIDC Core 1.0", Section: "10", Title: "Signatures and Encryption", Notes: "Covered by the applicable subsections below."},
-	{Spec: "OIDC Core 1.0", Section: "10.1", Title: "Signing", Applicable: true, Run: testSigning},
+	{Spec: "OIDC Core 1.0", Section: "10.1", Title: "Signing", Applicable: true, Notes: "As provider policy, signed JWTs include a kid identifying the published signing key.", Run: testSigning},
 	{Spec: "OIDC Core 1.0", Section: "10.1.1", Title: "Rotation of Asymmetric Signing Keys", Notes: "Signing key rotation is not implemented; the product uses a single signing key."},
 	{Spec: "OIDC Core 1.0", Section: "10.2", Title: "Encryption", Notes: "Encryption is not implemented."},
 	{Spec: "OIDC Core 1.0", Section: "10.2.1", Title: "Rotation of Asymmetric Encryption Keys", Notes: "Encryption is not implemented."},

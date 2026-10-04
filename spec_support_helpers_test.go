@@ -382,6 +382,10 @@ func verifyLogoutToken(t *testing.T, provider *providerProcess, rawToken string)
 	if len(jwks.Keys) != 1 {
 		t.Fatalf("expected a single jwk, got %#v", jwks.Keys)
 	}
+	header := decodeJWTHeader(t, rawToken)
+	if header.Kid == "" || header.Kid != jwks.Keys[0].KeyID {
+		t.Fatalf("kid mismatch: got %q, want %q", header.Kid, jwks.Keys[0].KeyID)
+	}
 	publicKey := rsaPublicKeyFromJWK(t, jwks.Keys[0])
 
 	parts := strings.Split(rawToken, ".")

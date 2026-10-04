@@ -678,6 +678,10 @@ func verifyIDToken(t *testing.T, provider *providerProcess, idToken string) idTo
 	if len(jwks.Keys) != 1 {
 		t.Fatalf("expected a single jwk, got %#v", jwks.Keys)
 	}
+	header := decodeJWTHeader(t, idToken)
+	if header.Kid == "" || header.Kid != jwks.Keys[0].KeyID {
+		t.Fatalf("kid mismatch: got %q, want %q", header.Kid, jwks.Keys[0].KeyID)
+	}
 	publicKey := rsaPublicKeyFromJWK(t, jwks.Keys[0])
 
 	parts := strings.Split(idToken, ".")
@@ -714,6 +718,10 @@ func verifyAccessToken(t *testing.T, provider *providerProcess, accessToken stri
 	jwks := fetchJWKS(t, provider)
 	if len(jwks.Keys) != 1 {
 		t.Fatalf("expected a single jwk, got %#v", jwks.Keys)
+	}
+	header := decodeJWTHeader(t, accessToken)
+	if header.Kid == "" || header.Kid != jwks.Keys[0].KeyID {
+		t.Fatalf("kid mismatch: got %q, want %q", header.Kid, jwks.Keys[0].KeyID)
 	}
 	publicKey := rsaPublicKeyFromJWK(t, jwks.Keys[0])
 

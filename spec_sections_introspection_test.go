@@ -273,6 +273,35 @@ func testIntrospectionErrorResponse(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects public clients without protected-resource authentication", func(t *testing.T) {
+		request := authorizationRequest{
+			ClientID:    nativeClientID,
+			RedirectURI: "http://127.0.0.1:49173/callback",
+			Scope:       "openid profile",
+			State:       "public-client-introspection",
+			Verifier:    pkceVerifier("public-client-introspection"),
+		}
+		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			CodeVerifier: request.Verifier,
+		})
+		for tokenType, rawToken := range map[string]string{"access token": token.AccessToken, "refresh token": token.RefreshToken} {
+			t.Run(tokenType, func(t *testing.T) {
+				if rawToken == "" {
+					t.Fatalf("expected %s, got %#v", tokenType, token)
+				}
+				resp := provider.postIntrospect(t, introspectionRequest{
+					ClientID: request.ClientID,
+					Token:    rawToken,
+				})
+				errResp := expectJSONError(t, resp, http.StatusUnauthorized)
+				if errResp.Error != "invalid_client" {
+					t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_client")
+				}
+			})
+		}
+	})
+
 	t.Run("returns invalid_client for failed protected-resource authentication", func(t *testing.T) {
 		resp := provider.postIntrospect(t, introspectionRequest{
 			ClientID:     webClientID,

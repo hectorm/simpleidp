@@ -10,7 +10,7 @@ var rfc7662Sections = []specSection{
 	{Spec: "RFC 7662", Section: "1.1", Title: "Notational Conventions", Notes: "Notation guidance is not a test target."},
 	{Spec: "RFC 7662", Section: "1.2", Title: "Terminology", Notes: "Terminology definitions are not test targets."},
 	{Spec: "RFC 7662", Section: "2", Title: "Introspection Endpoint", Applicable: true, Notes: "TLS is out of scope.", Run: testIntrospectionEndpoint},
-	{Spec: "RFC 7662", Section: "2.1", Title: "Introspection Request", Applicable: true, Run: testIntrospectionRequest},
+	{Spec: "RFC 7662", Section: "2.1", Title: "Introspection Request", Applicable: true, Notes: "Protected-resource authentication failures, including registered public clients supplying only client_id, are covered by section 2.3.", Run: testIntrospectionRequest},
 	{Spec: "RFC 7662", Section: "2.2", Title: "Introspection Response", Applicable: true, Run: testIntrospectionResponse},
 	{Spec: "RFC 7662", Section: "2.3", Title: "Error Response", Applicable: true, Run: testIntrospectionErrorResponse},
 	{Spec: "RFC 7662", Section: "3", Title: "IANA Considerations", Notes: "IANA registration text is not a test target."},

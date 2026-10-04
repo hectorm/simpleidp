@@ -33,35 +33,40 @@ func testProviderMetadata(t *testing.T) {
 	if discovery.JWKSURI != provider.endpoint("/jwks") {
 		t.Fatalf("jwks uri mismatch: got %q", discovery.JWKSURI)
 	}
-	if !slices.Contains(discovery.ScopesSupported, "openid") || !slices.Contains(discovery.ScopesSupported, "profile") || !slices.Contains(discovery.ScopesSupported, "email") {
+	slices.Sort(discovery.ScopesSupported)
+	if !slices.Equal(discovery.ScopesSupported, []string{"email", "groups", "openid", "profile", "roles"}) {
 		t.Fatalf("unexpected supported scopes: %#v", discovery.ScopesSupported)
 	}
-	if !slices.Contains(discovery.ResponseTypesSupported, "code") {
-		t.Fatalf("response_types_supported missing code: %#v", discovery.ResponseTypesSupported)
+	if !slices.Equal(discovery.ResponseTypesSupported, []string{"code"}) {
+		t.Fatalf("unexpected supported response types: %#v", discovery.ResponseTypesSupported)
 	}
-	if !slices.Contains(discovery.ResponseModesSupported, "query") {
-		t.Fatalf("response_modes_supported missing query: %#v", discovery.ResponseModesSupported)
+	if !slices.Equal(discovery.ResponseModesSupported, []string{"query"}) {
+		t.Fatalf("unexpected supported response modes: %#v", discovery.ResponseModesSupported)
 	}
-	if !slices.Contains(discovery.GrantTypesSupported, "authorization_code") {
-		t.Fatalf("grant_types_supported missing authorization_code: %#v", discovery.GrantTypesSupported)
+	slices.Sort(discovery.GrantTypesSupported)
+	if !slices.Equal(discovery.GrantTypesSupported, []string{"authorization_code", "client_credentials", "refresh_token"}) {
+		t.Fatalf("unexpected supported grant types: %#v", discovery.GrantTypesSupported)
 	}
-	if !slices.Contains(discovery.GrantTypesSupported, "refresh_token") {
-		t.Fatalf("grant_types_supported missing refresh_token: %#v", discovery.GrantTypesSupported)
+	if !slices.Equal(discovery.SubjectTypesSupported, []string{"public"}) {
+		t.Fatalf("unexpected supported subject types: %#v", discovery.SubjectTypesSupported)
 	}
-	if !slices.Contains(discovery.GrantTypesSupported, "client_credentials") {
-		t.Fatalf("grant_types_supported missing client_credentials: %#v", discovery.GrantTypesSupported)
+	if !slices.Equal(discovery.IDTokenSigningAlgValuesSupported, []string{"RS256"}) {
+		t.Fatalf("unexpected supported ID token signing algorithms: %#v", discovery.IDTokenSigningAlgValuesSupported)
 	}
-	if !slices.Contains(discovery.SubjectTypesSupported, "public") {
-		t.Fatalf("subject_types_supported missing public: %#v", discovery.SubjectTypesSupported)
-	}
-	if !slices.Contains(discovery.IDTokenSigningAlgValuesSupported, "RS256") {
-		t.Fatalf("id_token_signing_alg_values_supported missing RS256: %#v", discovery.IDTokenSigningAlgValuesSupported)
-	}
-	if !slices.Contains(discovery.TokenEndpointAuthMethodsSupported, "client_secret_basic") || !slices.Contains(discovery.TokenEndpointAuthMethodsSupported, "client_secret_post") {
+	slices.Sort(discovery.TokenEndpointAuthMethodsSupported)
+	if !slices.Equal(discovery.TokenEndpointAuthMethodsSupported, []string{"client_secret_basic", "client_secret_post", "none"}) {
 		t.Fatalf("unexpected token endpoint auth methods: %#v", discovery.TokenEndpointAuthMethodsSupported)
 	}
-	if !slices.Contains(discovery.ClaimsSupported, "sub") || !slices.Contains(discovery.ClaimsSupported, "email") {
+	if !slices.Equal(discovery.CodeChallengeMethodsSupported, []string{"S256"}) {
+		t.Fatalf("unexpected supported code challenge methods: %#v", discovery.CodeChallengeMethodsSupported)
+	}
+	slices.Sort(discovery.ClaimsSupported)
+	if !slices.Equal(discovery.ClaimsSupported, []string{"aud", "auth_time", "email", "email_verified", "exp", "groups", "iat", "iss", "locale", "name", "nonce", "picture", "preferred_username", "profile", "roles", "sid", "sub"}) {
 		t.Fatalf("unexpected claims_supported: %#v", discovery.ClaimsSupported)
+	}
+	slices.Sort(discovery.PromptValuesSupported)
+	if !slices.Equal(discovery.PromptValuesSupported, []string{"consent", "login", "none", "select_account"}) {
+		t.Fatalf("unexpected supported prompt values: %#v", discovery.PromptValuesSupported)
 	}
 	if discovery.ClaimsParameterSupported {
 		t.Fatal("claims_parameter_supported should be false")
