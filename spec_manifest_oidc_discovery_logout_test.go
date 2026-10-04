@@ -38,6 +38,8 @@ var oidcDiscoverySections = []specSection{
 	{Spec: "OIDC Discovery 1.0", Section: "9", Title: "References", Notes: "Reference sections are not test targets."},
 	{Spec: "OIDC Discovery 1.0", Section: "9.1", Title: "Normative References", Notes: "Reference sections are not test targets."},
 	{Spec: "OIDC Discovery 1.0", Section: "9.2", Title: "Informative References", Notes: "Reference sections are not test targets."},
+	{Spec: "OIDC Discovery 1.0", Section: "A", Title: "Acknowledgements", Notes: "Acknowledgements are not test targets."},
+	{Spec: "OIDC Discovery 1.0", Section: "B", Title: "Notices", Notes: "Notices are not test targets."},
 }
 
 var oidcRPInitiatedLogoutSections = []specSection{
@@ -59,6 +61,8 @@ var oidcRPInitiatedLogoutSections = []specSection{
 	{Spec: "OIDC RP-Initiated Logout 1.0", Section: "8", Title: "References", Notes: "Reference sections are not test targets."},
 	{Spec: "OIDC RP-Initiated Logout 1.0", Section: "8.1", Title: "Normative References", Notes: "Reference sections are not test targets."},
 	{Spec: "OIDC RP-Initiated Logout 1.0", Section: "8.2", Title: "Informative References", Notes: "Reference sections are not test targets."},
+	{Spec: "OIDC RP-Initiated Logout 1.0", Section: "A", Title: "Acknowledgements", Notes: "Acknowledgements are not test targets."},
+	{Spec: "OIDC RP-Initiated Logout 1.0", Section: "B", Title: "Notices", Notes: "Notices are not test targets."},
 }
 
 func TestOIDCDiscoverySections(t *testing.T) {

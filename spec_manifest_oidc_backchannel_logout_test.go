@@ -31,6 +31,8 @@ var oidcBackChannelLogoutSections = []specSection{
 	{Spec: "OIDC Back-Channel Logout 1.0", Section: "6", Title: "References", Notes: "Reference sections are not test targets."},
 	{Spec: "OIDC Back-Channel Logout 1.0", Section: "6.1", Title: "Normative References", Notes: "Reference sections are not test targets."},
 	{Spec: "OIDC Back-Channel Logout 1.0", Section: "6.2", Title: "Informative References", Notes: "Reference sections are not test targets."},
+	{Spec: "OIDC Back-Channel Logout 1.0", Section: "A", Title: "Acknowledgements", Notes: "Acknowledgements are not test targets."},
+	{Spec: "OIDC Back-Channel Logout 1.0", Section: "B", Title: "Notices", Notes: "Notices are not test targets."},
 }
 
 func TestOIDCBackChannelLogoutSections(t *testing.T) {

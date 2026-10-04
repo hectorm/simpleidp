@@ -40,6 +40,8 @@ var expectedOIDCCoreSections = []string{
 	"17", "17.1", "17.2", "17.3", "17.4",
 	"18", "18.1", "18.1.1", "18.2", "18.2.1", "18.3", "18.3.1", "18.4", "18.4.1",
 	"19", "19.1", "19.2",
+	"A", "A.1", "A.2", "A.3", "A.4", "A.5", "A.6", "A.7",
+	"B", "C",
 }
 
 var expectedOAuth21Sections = []string{
@@ -54,6 +56,10 @@ var expectedOAuth21Sections = []string{
 	"9",
 	"10", "10.1", "10.2",
 	"11", "12", "12.1", "12.2",
+	"A", "A.1", "A.2", "A.3", "A.4", "A.5", "A.6", "A.7", "A.8", "A.9", "A.10", "A.11", "A.12", "A.13", "A.14", "A.15", "A.16", "A.17", "A.18",
+	"B",
+	"C", "C.1", "C.2", "C.3",
+	"D", "E", "F",
 }
 
 var expectedOIDCDiscoverySections = []string{
@@ -66,6 +72,7 @@ var expectedOIDCDiscoverySections = []string{
 	"7", "7.1", "7.2",
 	"8", "8.1", "8.1.1", "8.2", "8.2.1",
 	"9", "9.1", "9.2",
+	"A", "B",
 }
 
 var expectedOIDCRPInitiatedLogoutSections = []string{
@@ -77,6 +84,7 @@ var expectedOIDCRPInitiatedLogoutSections = []string{
 	"6",
 	"7", "7.1", "7.1.1", "7.2", "7.2.1",
 	"8", "8.1", "8.2",
+	"A", "B",
 }
 
 var expectedOIDCBackChannelLogoutSections = []string{
@@ -86,6 +94,7 @@ var expectedOIDCBackChannelLogoutSections = []string{
 	"4", "4.1",
 	"5", "5.1", "5.1.1", "5.2", "5.2.1", "5.3", "5.3.1",
 	"6", "6.1", "6.2",
+	"A", "B",
 }
 
 var expectedRFC7662Sections = []string{

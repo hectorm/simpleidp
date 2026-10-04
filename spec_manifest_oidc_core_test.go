@@ -181,6 +181,16 @@ var oidcCoreSections = []specSection{
 	{Spec: "OIDC Core 1.0", Section: "19", Title: "References", Notes: "Reference sections are not test targets."},
 	{Spec: "OIDC Core 1.0", Section: "19.1", Title: "Normative References", Notes: "Reference sections are not test targets."},
 	{Spec: "OIDC Core 1.0", Section: "19.2", Title: "Informative References", Notes: "Reference sections are not test targets."},
+	{Spec: "OIDC Core 1.0", Section: "A", Title: "Authorization Examples", Notes: "Examples are not test targets."},
+	{Spec: "OIDC Core 1.0", Section: "A.1", Title: "Example using response_type=code", Notes: "Examples are not test targets."},
+	{Spec: "OIDC Core 1.0", Section: "A.2", Title: "Example using response_type=id_token", Notes: "Examples are not test targets."},
+	{Spec: "OIDC Core 1.0", Section: "A.3", Title: "Example using response_type=id_token token", Notes: "Examples are not test targets."},
+	{Spec: "OIDC Core 1.0", Section: "A.4", Title: "Example using response_type=code id_token", Notes: "Examples are not test targets."},
+	{Spec: "OIDC Core 1.0", Section: "A.5", Title: "Example using response_type=code token", Notes: "Examples are not test targets."},
+	{Spec: "OIDC Core 1.0", Section: "A.6", Title: "Example using response_type=code id_token token", Notes: "Examples are not test targets."},
+	{Spec: "OIDC Core 1.0", Section: "A.7", Title: "RSA Key Used in Examples", Notes: "Examples are not test targets."},
+	{Spec: "OIDC Core 1.0", Section: "B", Title: "Acknowledgements", Notes: "Acknowledgements are not test targets."},
+	{Spec: "OIDC Core 1.0", Section: "C", Title: "Notices", Notes: "Notices are not test targets."},
 }
 
 func TestOIDCCoreSections(t *testing.T) {
