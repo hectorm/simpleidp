@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testProviderMetadata(t *testing.T) {
@@ -118,9 +119,7 @@ func testProviderConfigurationResponse(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("discovery status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
 	}
-	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
-		t.Fatalf("content type mismatch: got %q", got)
-	}
+	assertMediaType(t, resp.Header.Get("Content-Type"), "application/json")
 	payload := decodeJSONMap(t, body)
 	for _, required := range []string{
 		"issuer",
@@ -173,6 +172,28 @@ func testProviderConfigurationValidation(t *testing.T) {
 }
 
 func testRPInitiatedLogout(t *testing.T) {
+	t.Run("accepts an expired id token hint for the current session", func(t *testing.T) {
+		fixture := prepareRPInitiatedLogout(t)
+		claims := decodeJWTClaims(t, fixture.token.IDToken)
+		claims["iat"] = time.Now().Add(-10 * time.Minute).Unix()
+		claims["auth_time"] = claims["iat"]
+		claims["exp"] = time.Now().Add(-5 * time.Minute).Unix()
+		hint := replaceJWTClaims(t, fixture.provider, fixture.token.IDToken, claims)
+		if verified := verifyIDToken(t, fixture.provider, hint); verified.Exp >= time.Now().Unix() {
+			t.Fatal("expected a correctly signed, expired ID Token hint")
+		}
+		body := fetchLogoutForm(t, fixture.provider, url.Values{
+			"id_token_hint":            {hint},
+			"post_logout_redirect_uri": {webClientPostLogoutRedirect},
+			"state":                    {"expired-hint-state"},
+		})
+		redirect := expectRedirect(t, submitConsentForm(t, fixture.provider, body, "yes"), http.StatusSeeOther)
+		assertRedirectTarget(t, redirect, webClientPostLogoutRedirect)
+		if got := redirect.Query().Get("state"); got != "expired-hint-state" {
+			t.Fatalf("state mismatch: got %q, want %q", got, "expired-hint-state")
+		}
+	})
+
 	t.Run("supports RP-initiated logout over GET and POST", func(t *testing.T) {
 		fixture := prepareRPInitiatedLogout(t)
 		if !strings.Contains(string(fixture.formBody), "Log out of this identity provider?") {
@@ -184,6 +205,7 @@ func testRPInitiatedLogout(t *testing.T) {
 			"id_token_hint":            {postFixture.token.IDToken},
 			"post_logout_redirect_uri": {webClientPostLogoutRedirect},
 			"state":                    {"logout-state"},
+			"ui_locales":               {"fr-CA fr en"},
 		}, "", false)
 		body := readBody(t, resp)
 		if resp.StatusCode != http.StatusOK {
@@ -434,6 +456,27 @@ func testLogoutClientRegistrationMetadata(t *testing.T) {
 
 func testLogoutValidationAndErrorHandling(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
+
+	t.Run("keeps logout idempotent after the session has ended", func(t *testing.T) {
+		fixture := prepareRPInitiatedLogout(t)
+		_ = expectRedirect(t, submitConsentForm(t, fixture.provider, fixture.formBody, "yes"), http.StatusSeeOther)
+		params := url.Values{
+			"id_token_hint":            {fixture.token.IDToken},
+			"post_logout_redirect_uri": {webClientPostLogoutRedirect},
+			"state":                    {"repeated-logout-state"},
+		}
+		for range 2 {
+			req, err := http.NewRequest(http.MethodGet, fixture.provider.endpoint("/end-session")+"?"+params.Encode(), nil)
+			if err != nil {
+				t.Fatalf("failed to create repeated logout request: %v", err)
+			}
+			redirect := expectRedirect(t, fixture.provider.do(t, fixture.provider.redirectless, req), http.StatusFound)
+			assertRedirectTarget(t, redirect, webClientPostLogoutRedirect)
+			if got := redirect.Query().Get("state"); got != params.Get("state") {
+				t.Fatalf("state mismatch after repeated logout: got %q, want %q", got, params.Get("state"))
+			}
+		}
+	})
 
 	t.Run("rejects invalid id token hints", func(t *testing.T) {
 		req, err := http.NewRequest(http.MethodGet, provider.endpoint("/end-session")+"?"+url.Values{

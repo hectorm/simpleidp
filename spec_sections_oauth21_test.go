@@ -50,6 +50,27 @@ func testOAuth21ClientTypes(t *testing.T) {
 func testOAuth21ClientIdentifier(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 
+	t.Run("rejects duplicate configured client identifiers", func(t *testing.T) {
+		environ := []string{
+			"SIMPLE_IDP_CLIENT_WEB_ID=" + webClientID,
+			"SIMPLE_IDP_CLIENT_WEB_SECRET=" + webClientSecret,
+			"SIMPLE_IDP_CLIENT_OTHER_ID=" + webClientID,
+			"SIMPLE_IDP_CLIENT_OTHER_SECRET=" + otherClientSecret,
+		}
+		_, err := loadClients(environ, func(name string) string {
+			for _, item := range environ {
+				key, value, _ := strings.Cut(item, "=")
+				if key == name {
+					return value
+				}
+			}
+			return ""
+		})
+		if err == nil || !strings.Contains(err.Error(), "duplicate client ID") {
+			t.Fatalf("expected duplicate client identifier error, got %v", err)
+		}
+	})
+
 	t.Run("rejects incomplete client configuration for every supported field", func(t *testing.T) {
 		for _, field := range []string{
 			"ID", "SECRET", "AUDIENCE", "REDIRECT_URL", "POST_LOGOUT_REDIRECT_URL",
@@ -314,7 +335,7 @@ func testOAuth21ClientCredentialsGrant(t *testing.T) {
 			ClientSecret: "service-secret",
 			Scope:        "orders:read",
 		})
-		if token.TokenType != "Bearer" || token.Scope != "orders:read" || token.RefreshToken != "" || token.IDToken != "" {
+		if !strings.EqualFold(token.TokenType, "Bearer") || token.Scope != "orders:read" || token.RefreshToken != "" || token.IDToken != "" {
 			t.Fatalf("unexpected token response: %#v", token)
 		}
 		claims := verifyAccessToken(t, provider, token.AccessToken)
@@ -405,7 +426,7 @@ func testOAuth21BearerAuthorizationHeaderField(t *testing.T) {
 		}
 		req.Header.Set("Authorization", scheme+" "+token.AccessToken)
 
-		resp := provider.do(t, provider.http, req)
+		resp := provider.do(t, provider.redirectless, req)
 		body := readBody(t, resp)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("userinfo status mismatch for scheme %q: got %s, want %d; body=%s", scheme, resp.Status, http.StatusOK, body)
@@ -419,7 +440,7 @@ func testOAuth21BearerAuthorizationHeaderField(t *testing.T) {
 		}
 		req.Header.Set("Authorization", "Token "+token.AccessToken)
 
-		resp := provider.do(t, provider.http, req)
+		resp := provider.do(t, provider.redirectless, req)
 		body := readBody(t, resp)
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
@@ -453,7 +474,7 @@ func testOAuth21FormEncodedContentParameter(t *testing.T) {
 			t.Fatalf("failed to create userinfo request: %v", err)
 		}
 
-		resp := provider.do(t, provider.http, req)
+		resp := provider.do(t, provider.redirectless, req)
 		body := readBody(t, resp)
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
@@ -487,7 +508,7 @@ func testOAuth21BearerTokenRequests(t *testing.T) {
 			t.Fatalf("failed to create userinfo request: %v", err)
 		}
 
-		resp := provider.do(t, provider.http, req)
+		resp := provider.do(t, provider.redirectless, req)
 		body := readBody(t, resp)
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
@@ -769,7 +790,7 @@ func testOAuth21DontPassBearerTokensInPageURLs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create userinfo request: %v", err)
 	}
-	resp = provider.do(t, provider.http, req)
+	resp = provider.do(t, provider.redirectless, req)
 	body = readBody(t, resp)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
@@ -1096,7 +1117,7 @@ func testOAuth21ClientAuthenticationOfNativeApps(t *testing.T) {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.SetBasicAuth(url.QueryEscape(request.ClientID), "")
 
-		errResp := expectJSONError(t, provider.do(t, provider.http, req), http.StatusBadRequest)
+		errResp := expectJSONError(t, provider.do(t, provider.redirectless, req), http.StatusBadRequest)
 		if errResp.Error != "invalid_request" {
 			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_request")
 		}
@@ -1159,12 +1180,7 @@ func testOAuth21TokenEndpointResponse(t *testing.T) {
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("token status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
 			}
-			if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
-				t.Fatalf("content type mismatch: got %q", got)
-			}
-			if got := resp.Header.Get("Cache-Control"); got != "no-store" {
-				t.Fatalf("cache-control mismatch: got %q", got)
-			}
+			assertTokenResponseHeaders(t, resp)
 
 			var token tokenResponse
 			if err := json.Unmarshal(body, &token); err != nil {
@@ -1173,7 +1189,7 @@ func testOAuth21TokenEndpointResponse(t *testing.T) {
 			if token.AccessToken == "" {
 				t.Fatalf("expected access token, got %#v", token)
 			}
-			if token.TokenType != "Bearer" {
+			if !strings.EqualFold(token.TokenType, "Bearer") {
 				t.Fatalf("token type mismatch: got %q, want %q", token.TokenType, "Bearer")
 			}
 			if token.ExpiresIn <= 0 {

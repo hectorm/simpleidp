@@ -4,7 +4,6 @@ package simpleidp
 // RFC 7009: https://www.rfc-editor.org/rfc/rfc7009.txt
 
 import (
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -61,7 +60,7 @@ func testRevocationRequest(t *testing.T) {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.SetBasicAuth(url.QueryEscape(webClientID), url.QueryEscape(webClientSecret))
 
-		errResp := expectJSONError(t, provider.do(t, provider.http, req), http.StatusBadRequest)
+		errResp := expectJSONError(t, provider.do(t, provider.redirectless, req), http.StatusBadRequest)
 		if errResp.Error != "invalid_request" {
 			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_request")
 		}
@@ -74,7 +73,7 @@ func testRevocationRequest(t *testing.T) {
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-		errResp := expectJSONError(t, provider.do(t, provider.http, req), http.StatusBadRequest)
+		errResp := expectJSONError(t, provider.do(t, provider.redirectless, req), http.StatusBadRequest)
 		if errResp.Error != "invalid_request" {
 			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_request")
 		}
@@ -380,7 +379,7 @@ func postRevoke(t *testing.T, provider *providerProcess, request revocationReque
 	if request.TokenTypeHint != "" {
 		form.Set("token_type_hint", request.TokenTypeHint)
 	}
-	if request.ClientID != "" {
+	if request.ClientID != "" && (request.ClientSecret == "" || request.AuthMethod == authMethodClientSecretPost) {
 		form.Set("client_id", request.ClientID)
 	}
 	if request.ClientSecret != "" && request.AuthMethod == authMethodClientSecretPost {
@@ -394,10 +393,6 @@ func postRevoke(t *testing.T, provider *providerProcess, request revocationReque
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if request.ClientSecret != "" && request.AuthMethod != authMethodClientSecretPost {
 		req.SetBasicAuth(url.QueryEscape(request.ClientID), url.QueryEscape(request.ClientSecret))
-		form.Del("client_id")
-		form.Del("client_secret")
-		req.Body = io.NopCloser(strings.NewReader(form.Encode()))
-		req.ContentLength = int64(len(form.Encode()))
 	}
-	return provider.do(t, provider.http, req)
+	return provider.do(t, provider.redirectless, req)
 }

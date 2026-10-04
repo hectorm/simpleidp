@@ -1014,9 +1014,7 @@ func testBackChannelLogoutRequest(t *testing.T) {
 		if len(requests) != 1 {
 			t.Fatalf("expected 1 backchannel logout request, got %d", len(requests))
 		}
-		if !strings.HasPrefix(requests[0].contentType, "application/x-www-form-urlencoded") {
-			t.Fatalf("expected application/x-www-form-urlencoded content type, got %q", requests[0].contentType)
-		}
+		assertMediaType(t, requests[0].contentType, "application/x-www-form-urlencoded")
 		if requests[0].rawToken == "" {
 			t.Fatal("expected logout_token parameter in POST body")
 		}

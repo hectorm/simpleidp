@@ -24,6 +24,51 @@ import (
 func testStandardClaims(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 
+	t.Run("preserves both boolean email_verified values in scoped claims", func(t *testing.T) {
+		for _, verified := range []bool{true, false} {
+			t.Run(fmt.Sprint(verified), func(t *testing.T) {
+				config := defaultProviderConfig()
+				config.Users[0].EmailVerified = verified
+				provider := startProvider(t, config)
+				request := newDefaultConfidentialAuthorizationRequest("email-verified-boolean")
+				request.Scope = "openid email"
+				token := authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					CodeVerifier: request.Verifier,
+				})
+				_ = verifyIDToken(t, provider, token.IDToken)
+				_ = verifyAccessToken(t, provider, token.AccessToken)
+				userinfoResponse := provider.getUserInfoResponse(t, token.AccessToken)
+				userinfo := readBody(t, userinfoResponse)
+				if userinfoResponse.StatusCode != http.StatusOK {
+					t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", userinfoResponse.Status, http.StatusOK, userinfo)
+				}
+				assertMediaType(t, userinfoResponse.Header.Get("Content-Type"), "application/json")
+				introspectionResponse := provider.postIntrospect(t, introspectionRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					Token:        token.AccessToken,
+				})
+				introspection := readBody(t, introspectionResponse)
+				if introspectionResponse.StatusCode != http.StatusOK {
+					t.Fatalf("introspection status mismatch: got %s, want %d; body=%s", introspectionResponse.Status, http.StatusOK, introspection)
+				}
+				assertMediaType(t, introspectionResponse.Header.Get("Content-Type"), "application/json")
+				for source, claims := range map[string]map[string]any{
+					"ID Token":      decodeJWTClaims(t, token.IDToken),
+					"access token":  decodeJWTClaims(t, token.AccessToken),
+					"UserInfo":      decodeJSONMap(t, userinfo),
+					"introspection": decodeJSONMap(t, introspection),
+				} {
+					if value, present := claims["email_verified"]; !present || value != verified {
+						t.Fatalf("%s email_verified mismatch: got %#v (present=%t), want %t", source, value, present, verified)
+					}
+				}
+			})
+		}
+	})
+
 	t.Run("returns implemented standard claims with their configured values", func(t *testing.T) {
 		request := newDefaultConfidentialAuthorizationRequest("standard-claims")
 		token := authorizeAndExchange(t, provider, request, tokenRequest{
@@ -258,9 +303,7 @@ func testSuccessfulUserInfoResponse(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
 		}
-		if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
-			t.Fatalf("content type mismatch: got %q", got)
-		}
+		assertMediaType(t, resp.Header.Get("Content-Type"), "application/json")
 		payload := decodeJSONMap(t, body)
 		if payload["sub"] != testSubject {
 			t.Fatalf("subject mismatch: got %#v", payload["sub"])
@@ -353,7 +396,7 @@ func testUserInfoErrorResponse(t *testing.T) {
 		}
 		req.Header.Set("Authorization", "Bearer "+token.AccessToken+" extra")
 
-		resp := provider.do(t, provider.http, req)
+		resp := provider.do(t, provider.redirectless, req)
 		body := readBody(t, resp)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
@@ -404,7 +447,7 @@ func testUserInfoErrorResponse(t *testing.T) {
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-		resp := provider.do(t, provider.http, req)
+		resp := provider.do(t, provider.redirectless, req)
 		body := readBody(t, resp)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
@@ -693,7 +736,7 @@ func testClientAuthentication(t *testing.T) {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.SetBasicAuth(url.QueryEscape(request.ClientID), url.QueryEscape(webClientSecret))
 
-		errResp := expectJSONError(t, provider.do(t, provider.http, req), http.StatusBadRequest)
+		errResp := expectJSONError(t, provider.do(t, provider.redirectless, req), http.StatusBadRequest)
 		if errResp.Error != "invalid_request" {
 			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_request")
 		}
@@ -745,7 +788,7 @@ func testClientAuthentication(t *testing.T) {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.SetBasicAuth(url.QueryEscape(request.ClientID), "")
 
-		errResp := expectJSONError(t, provider.do(t, provider.http, req), http.StatusBadRequest)
+		errResp := expectJSONError(t, provider.do(t, provider.redirectless, req), http.StatusBadRequest)
 		if errResp.Error != "invalid_request" {
 			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_request")
 		}
@@ -910,7 +953,7 @@ func testProfilePage(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed to create request: %v", err)
 				}
-				resp := provider.do(t, provider.http, req)
+				resp := provider.do(t, provider.redirectless, req)
 				body := readBody(t, resp)
 				if resp.StatusCode != http.StatusNotFound {
 					t.Fatalf("unknown path %q status mismatch: got %s, want %d; body=%s", req.URL.Path, resp.Status, http.StatusNotFound, body)

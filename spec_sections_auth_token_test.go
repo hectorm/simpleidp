@@ -397,14 +397,32 @@ func testAuthenticationRequestValidation(t *testing.T) {
 	})
 
 	t.Run("rejects duplicate recognized parameters", func(t *testing.T) {
+		hintRequest := newDefaultConfidentialAuthorizationRequest("duplicate-parameter-id-token-hint")
+		hintToken := authorizeAndExchange(t, provider, hintRequest, tokenRequest{
+			ClientID:     hintRequest.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: hintRequest.Verifier,
+		})
+		parameterValues := map[string]string{
+			"response_mode": "query", "prompt": "login", "max_age": "300",
+			"display": "page", "ui_locales": "en", "claims_locales": "en",
+			"claims": "{}", "registration": "{}",
+			"id_token_hint": hintToken.IDToken, "login_hint": testUsername,
+			"acr_values": "urn:example:authentication",
+		}
 		for _, method := range []string{http.MethodGet, "POST query", "POST body"} {
 			t.Run(method, func(t *testing.T) {
-				for _, parameter := range []string{"response_type", "scope", "state", "nonce", "code_challenge", "code_challenge_method", "claims", "ui_locales"} {
+				for _, parameter := range []string{
+					"response_type", "response_mode", "scope", "state", "nonce", "display",
+					"prompt", "max_age", "ui_locales", "claims_locales", "id_token_hint",
+					"login_hint", "acr_values", "claims", "registration",
+					"code_challenge", "code_challenge_method",
+				} {
 					t.Run(parameter, func(t *testing.T) {
 						request := newDefaultConfidentialAuthorizationRequest("duplicate-" + parameter)
 						params := authorizeParams(request)
 						if !params.Has(parameter) {
-							params.Set(parameter, "ignored")
+							params.Set(parameter, parameterValues[parameter])
 						}
 						params.Add(parameter, params.Get(parameter))
 
@@ -1147,35 +1165,47 @@ func testTokenRequestValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects short code verifiers", func(t *testing.T) {
-		request := newDefaultConfidentialAuthorizationRequest("short-code-verifier")
-		authorization := authorizeAndLogin(t, provider, request)
+	for _, testCase := range []struct {
+		name     string
+		verifier string
+	}{
+		{"rejects short code verifiers", strings.Repeat("a", 42)},
+		{"rejects long code verifiers", strings.Repeat("a", 129)},
+		{"rejects malformed code verifiers", strings.Repeat("a", 42) + "!"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			request := newDefaultConfidentialAuthorizationRequest(testCase.name)
+			request.Verifier = testCase.verifier
+			authorization := authorizeAndLogin(t, provider, request)
 
-		errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
-			ClientID:     request.ClientID,
-			ClientSecret: webClientSecret,
-			Code:         authorization.Code,
-			RedirectURI:  request.RedirectURI,
-			CodeVerifier: strings.Repeat("a", 42),
-		}), http.StatusBadRequest)
-		if errResp.Error != "invalid_grant" {
-			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_grant")
-		}
-	})
+			errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
+				ClientID:     request.ClientID,
+				ClientSecret: webClientSecret,
+				Code:         authorization.Code,
+				RedirectURI:  request.RedirectURI,
+				CodeVerifier: request.Verifier,
+			}), http.StatusBadRequest)
+			if errResp.Error != "invalid_grant" {
+				t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_grant")
+			}
+		})
+	}
 
-	t.Run("rejects malformed code verifiers", func(t *testing.T) {
-		request := newDefaultConfidentialAuthorizationRequest("malformed-code-verifier")
-		authorization := authorizeAndLogin(t, provider, request)
-
-		errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
-			ClientID:     request.ClientID,
-			ClientSecret: webClientSecret,
-			Code:         authorization.Code,
-			RedirectURI:  request.RedirectURI,
-			CodeVerifier: strings.Repeat("a", 42) + "!",
-		}), http.StatusBadRequest)
-		if errResp.Error != "invalid_grant" {
-			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_grant")
+	t.Run("accepts the full code verifier syntax and length boundaries", func(t *testing.T) {
+		for _, verifier := range []string{
+			strings.Repeat("a", 43),
+			strings.Repeat("a", 128),
+			"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~",
+		} {
+			t.Run(verifier, func(t *testing.T) {
+				request := newDefaultConfidentialAuthorizationRequest("valid-code-verifier")
+				request.Verifier = verifier
+				_ = authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					CodeVerifier: request.Verifier,
+				})
+			})
 		}
 	})
 
@@ -1299,15 +1329,7 @@ func testSuccessfulTokenResponse(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("token status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
 	}
-	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
-		t.Fatalf("content type mismatch: got %q", got)
-	}
-	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
-		t.Fatalf("cache-control mismatch: got %q", got)
-	}
-	if got := resp.Header.Get("Pragma"); got != "no-cache" {
-		t.Fatalf("pragma mismatch: got %q", got)
-	}
+	assertTokenResponseHeaders(t, resp)
 
 	var token tokenResponse
 	if err := json.Unmarshal(body, &token); err != nil {
@@ -1316,7 +1338,7 @@ func testSuccessfulTokenResponse(t *testing.T) {
 	if token.AccessToken == "" || token.IDToken == "" {
 		t.Fatalf("expected tokens, got %#v", token)
 	}
-	if token.TokenType != "Bearer" {
+	if !strings.EqualFold(token.TokenType, "Bearer") {
 		t.Fatalf("token type mismatch: got %q, want %q", token.TokenType, "Bearer")
 	}
 	if token.ExpiresIn <= 0 {
@@ -1453,7 +1475,7 @@ func testRefreshRequest(t *testing.T) {
 			t.Fatalf("failed to create token request: %v", err)
 		}
 
-		resp := provider.do(t, provider.http, req)
+		resp := provider.do(t, provider.redirectless, req)
 		body := readBody(t, resp)
 		if resp.StatusCode != http.StatusMethodNotAllowed {
 			t.Fatalf("token status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusMethodNotAllowed, body)
@@ -1486,7 +1508,7 @@ func testSuccessfulRefreshResponse(t *testing.T) {
 	if refreshed.AccessToken == "" {
 		t.Fatalf("expected access token, got %#v", refreshed)
 	}
-	if refreshed.TokenType != "Bearer" {
+	if !strings.EqualFold(refreshed.TokenType, "Bearer") {
 		t.Fatalf("token type mismatch: got %q, want %q", refreshed.TokenType, "Bearer")
 	}
 	if refreshed.ExpiresIn <= 0 {
@@ -1497,6 +1519,9 @@ func testSuccessfulRefreshResponse(t *testing.T) {
 	}
 	if refreshed.AccessToken == token.AccessToken {
 		t.Fatalf("expected a new access token, got %#v", refreshed)
+	}
+	if refreshed.RefreshToken == "" || refreshed.RefreshToken == token.RefreshToken {
+		t.Fatalf("expected confidential-client refresh token rotation, got %#v", refreshed)
 	}
 	if refreshed.IDToken == "" {
 		t.Fatal("expected the provider to issue an ID Token when the refreshed scope includes openid")
@@ -1849,7 +1874,7 @@ func testTokenErrorResponse(t *testing.T) {
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-		errResp := expectJSONError(t, provider.do(t, provider.http, req), http.StatusBadRequest)
+		errResp := expectJSONError(t, provider.do(t, provider.redirectless, req), http.StatusBadRequest)
 		if errResp.Error != "invalid_request" {
 			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_request")
 		}
@@ -1871,7 +1896,7 @@ func testTokenErrorResponse(t *testing.T) {
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-		errResp := expectJSONError(t, provider.do(t, provider.http, req), http.StatusBadRequest)
+		errResp := expectJSONError(t, provider.do(t, provider.redirectless, req), http.StatusBadRequest)
 		if errResp.Error != "invalid_request" {
 			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_request")
 		}
@@ -1889,7 +1914,7 @@ func testTokenErrorResponse(t *testing.T) {
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-		errResp := expectJSONError(t, provider.do(t, provider.http, req), http.StatusBadRequest)
+		errResp := expectJSONError(t, provider.do(t, provider.redirectless, req), http.StatusBadRequest)
 		if errResp.Error != "unsupported_grant_type" {
 			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "unsupported_grant_type")
 		}

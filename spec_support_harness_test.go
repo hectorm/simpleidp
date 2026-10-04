@@ -298,7 +298,7 @@ func (p *providerProcess) postToken(t *testing.T, request tokenRequest) *http.Re
 	if request.Scope != "" {
 		form.Set("scope", request.Scope)
 	}
-	if request.ClientID != "" {
+	if request.ClientID != "" && (request.ClientSecret == "" || request.AuthMethod == authMethodClientSecretPost) {
 		form.Set("client_id", request.ClientID)
 	}
 	if request.RedirectURI != "" {
@@ -318,12 +318,8 @@ func (p *providerProcess) postToken(t *testing.T, request tokenRequest) *http.Re
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if request.ClientSecret != "" && request.AuthMethod != authMethodClientSecretPost {
 		req.SetBasicAuth(url.QueryEscape(request.ClientID), url.QueryEscape(request.ClientSecret))
-		form.Del("client_id")
-		form.Del("client_secret")
-		req.Body = io.NopCloser(strings.NewReader(form.Encode()))
-		req.ContentLength = int64(len(form.Encode()))
 	}
-	return p.do(t, p.http, req)
+	return p.do(t, p.redirectless, req)
 }
 
 func (p *providerProcess) postIntrospect(t *testing.T, request introspectionRequest) *http.Response {
@@ -335,7 +331,7 @@ func (p *providerProcess) postIntrospect(t *testing.T, request introspectionRequ
 	if request.TokenTypeHint != "" {
 		form.Set("token_type_hint", request.TokenTypeHint)
 	}
-	if request.ClientID != "" {
+	if request.ClientID != "" && (request.ClientSecret == "" || request.AuthMethod == authMethodClientSecretPost) {
 		form.Set("client_id", request.ClientID)
 	}
 	if request.ClientSecret != "" && request.AuthMethod == authMethodClientSecretPost {
@@ -349,12 +345,8 @@ func (p *providerProcess) postIntrospect(t *testing.T, request introspectionRequ
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if request.ClientSecret != "" && request.AuthMethod != authMethodClientSecretPost {
 		req.SetBasicAuth(url.QueryEscape(request.ClientID), url.QueryEscape(request.ClientSecret))
-		form.Del("client_id")
-		form.Del("client_secret")
-		req.Body = io.NopCloser(strings.NewReader(form.Encode()))
-		req.ContentLength = int64(len(form.Encode()))
 	}
-	return p.do(t, p.http, req)
+	return p.do(t, p.redirectless, req)
 }
 
 func (p *providerProcess) getUserInfoResponse(t *testing.T, accessToken string) *http.Response {
@@ -365,7 +357,7 @@ func (p *providerProcess) getUserInfoResponse(t *testing.T, accessToken string) 
 		t.Fatalf("failed to create userinfo request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	return p.do(t, p.http, req)
+	return p.do(t, p.redirectless, req)
 }
 
 func (p *providerProcess) postUserInfo(t *testing.T, form url.Values, authorization string) *http.Response {
@@ -379,7 +371,7 @@ func (p *providerProcess) postUserInfo(t *testing.T, form url.Values, authorizat
 	if authorization != "" {
 		req.Header.Set("Authorization", authorization)
 	}
-	return p.do(t, p.http, req)
+	return p.do(t, p.redirectless, req)
 }
 
 func (p *providerProcess) postFormURL(t *testing.T, target string, form url.Values, authorization string, followRedirects bool) *http.Response {
@@ -466,7 +458,7 @@ func fetchDiscovery(t *testing.T, provider *providerProcess) discoveryDocument {
 		t.Fatalf("failed to create discovery request: %v", err)
 	}
 
-	resp := provider.do(t, provider.http, req)
+	resp := provider.do(t, provider.redirectless, req)
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("discovery status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
@@ -631,6 +623,8 @@ func exchangeAuthorizationCode(t *testing.T, provider *providerProcess, request 
 		t.Fatalf("token status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
 	}
 
+	assertTokenResponseHeaders(t, resp)
+
 	var token tokenResponse
 	if err := json.Unmarshal(body, &token); err != nil {
 		t.Fatalf("failed to decode token response: %v\nbody=%s", err, body)
@@ -648,6 +642,8 @@ func exchangeRefreshToken(t *testing.T, provider *providerProcess, request token
 		t.Fatalf("token status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
 	}
 
+	assertTokenResponseHeaders(t, resp)
+
 	var token tokenResponse
 	if err := json.Unmarshal(body, &token); err != nil {
 		t.Fatalf("failed to decode token response: %v\nbody=%s", err, body)
@@ -664,6 +660,8 @@ func exchangeClientCredentials(t *testing.T, provider *providerProcess, request 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("token status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
 	}
+
+	assertTokenResponseHeaders(t, resp)
 
 	var token tokenResponse
 	if err := json.Unmarshal(body, &token); err != nil {
@@ -768,7 +766,7 @@ func fetchJWKS(t *testing.T, provider *providerProcess) jwksDocument {
 		t.Fatalf("failed to create jwks request: %v", err)
 	}
 
-	resp := provider.do(t, provider.http, req)
+	resp := provider.do(t, provider.redirectless, req)
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("jwks status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)

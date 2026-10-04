@@ -31,9 +31,7 @@ func testIntrospectionEndpoint(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("introspection status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
 	}
-	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
-		t.Fatalf("content type mismatch: got %q", got)
-	}
+	assertMediaType(t, resp.Header.Get("Content-Type"), "application/json")
 }
 
 func testIntrospectionRequest(t *testing.T) {
@@ -60,7 +58,7 @@ func testIntrospectionRequest(t *testing.T) {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.SetBasicAuth(url.QueryEscape(webClientID), url.QueryEscape(webClientSecret))
 
-		errResp := expectJSONError(t, provider.do(t, provider.http, req), http.StatusBadRequest)
+		errResp := expectJSONError(t, provider.do(t, provider.redirectless, req), http.StatusBadRequest)
 		if errResp.Error != "invalid_request" {
 			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_request")
 		}
@@ -73,7 +71,7 @@ func testIntrospectionRequest(t *testing.T) {
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-		errResp := expectJSONError(t, provider.do(t, provider.http, req), http.StatusBadRequest)
+		errResp := expectJSONError(t, provider.do(t, provider.redirectless, req), http.StatusBadRequest)
 		if errResp.Error != "invalid_request" {
 			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_request")
 		}
@@ -92,7 +90,7 @@ func testIntrospectionRequest(t *testing.T) {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.SetBasicAuth(url.QueryEscape(webClientID), url.QueryEscape(webClientSecret))
 
-		errResp := expectJSONError(t, provider.do(t, provider.http, req), http.StatusBadRequest)
+		errResp := expectJSONError(t, provider.do(t, provider.redirectless, req), http.StatusBadRequest)
 		if errResp.Error != "invalid_request" {
 			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_request")
 		}
@@ -162,7 +160,7 @@ func testIntrospectionResponse(t *testing.T) {
 		if response.ClientID != "" && response.ClientID != request.ClientID {
 			t.Fatalf("client_id mismatch: got %q, want %q", response.ClientID, request.ClientID)
 		}
-		if response.TokenType != "" && response.TokenType != "Bearer" {
+		if response.TokenType != "" && !strings.EqualFold(response.TokenType, "Bearer") {
 			t.Fatalf("token_type mismatch: got %q, want %q", response.TokenType, "Bearer")
 		}
 		if response.Exp != 0 && response.Exp <= time.Now().Unix() {
@@ -192,7 +190,7 @@ func testIntrospectionResponse(t *testing.T) {
 		if response.ClientID != request.ClientID {
 			t.Fatalf("client_id mismatch: got %q, want %q", response.ClientID, request.ClientID)
 		}
-		if response.TokenType != "Bearer" {
+		if !strings.EqualFold(response.TokenType, "Bearer") {
 			t.Fatalf("token_type mismatch: got %q, want %q", response.TokenType, "Bearer")
 		}
 		if response.Exp <= time.Now().Unix() {

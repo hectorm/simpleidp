@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"encoding/json/v2"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -38,6 +39,55 @@ type rpInitiatedLogoutFixture struct {
 	formBody   []byte
 	formAction string
 	csrfToken  string
+}
+
+func assertMediaType(t *testing.T, contentType, expected string) {
+	t.Helper()
+
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || mediaType != expected {
+		t.Fatalf("content type mismatch: got %q, want %q", contentType, expected)
+	}
+}
+
+func assertHeaderDirective(t *testing.T, header http.Header, name, expected string) {
+	t.Helper()
+
+	for _, value := range header.Values(name) {
+		for directive := range strings.SplitSeq(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(directive), expected) {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected %s directive %q, got %#v", name, expected, header.Values(name))
+}
+
+func assertTokenResponseHeaders(t *testing.T, resp *http.Response) {
+	t.Helper()
+
+	assertMediaType(t, resp.Header.Get("Content-Type"), "application/json")
+	assertHeaderDirective(t, resp.Header, "Cache-Control", "no-store")
+}
+
+func replaceJWTClaims(t *testing.T, provider *providerProcess, token string, claims map[string]any) string {
+	t.Helper()
+
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("invalid JWT format: %q", token)
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("failed to encode JWT claims: %v", err)
+	}
+	signingInput := parts[0] + "." + base64.RawURLEncoding.EncodeToString(payload)
+	digest := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(nil, provider.idp.privKey, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("failed to sign test JWT: %v", err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
 func decodeJWTHeader(t *testing.T, token string) jwtHeader {
@@ -217,9 +267,7 @@ func fetchProfilePage(t *testing.T, provider *providerProcess) []byte {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("profile page status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
 	}
-	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
-		t.Fatalf("profile content type mismatch: got %q", got)
-	}
+	assertMediaType(t, resp.Header.Get("Content-Type"), "text/html")
 	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("profile cache control mismatch: got %q, want %q", got, "no-store")
 	}
