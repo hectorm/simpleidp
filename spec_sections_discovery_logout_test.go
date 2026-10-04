@@ -396,6 +396,40 @@ func testLogoutClientRegistrationMetadata(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("rejects invalid registered post-logout redirect uris", func(t *testing.T) {
+		for _, redirectURL := range []string{
+			"http://127.0.0.1/logout/callback#fragment",
+			"http://127.0.0.1/logout/callback#",
+			"/logout/callback",
+			"https:/logout/callback",
+			"https:///logout/callback",
+			"ftp://127.0.0.1/logout/callback",
+			"http://user:password@127.0.0.1/logout/callback",
+			"http://127.0.0.1/%invalid",
+		} {
+			t.Run(redirectURL, func(t *testing.T) {
+				environ := []string{
+					"SIMPLE_IDP_CLIENT_WEB_ID=" + webClientID,
+					"SIMPLE_IDP_CLIENT_WEB_SECRET=" + webClientSecret,
+					"SIMPLE_IDP_CLIENT_WEB_REDIRECT_URL=" + webClientRedirect,
+					"SIMPLE_IDP_CLIENT_WEB_POST_LOGOUT_REDIRECT_URL=" + redirectURL,
+				}
+				_, err := loadClients(environ, func(name string) string {
+					for _, item := range environ {
+						key, value, _ := strings.Cut(item, "=")
+						if key == name {
+							return value
+						}
+					}
+					return ""
+				})
+				if err == nil || !strings.Contains(err.Error(), "post-logout redirect URL") {
+					t.Fatalf("expected invalid post-logout redirect URL error, got %v", err)
+				}
+			})
+		}
+	})
 }
 
 func testLogoutValidationAndErrorHandling(t *testing.T) {

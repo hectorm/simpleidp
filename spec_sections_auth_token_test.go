@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -191,13 +192,32 @@ func testAuthenticationRequestValidation(t *testing.T) {
 	})
 
 	t.Run("rejects invalid prompts", func(t *testing.T) {
-		request := newDefaultConfidentialAuthorizationRequest("invalid-prompt")
-		params := authorizeParams(request)
-		params.Set("prompt", "none consent")
+		for _, prompt := range []string{"none consent", "unknown"} {
+			t.Run(prompt, func(t *testing.T) {
+				request := newDefaultConfidentialAuthorizationRequest("invalid-prompt")
+				params := authorizeParams(request)
+				params.Set("prompt", prompt)
 
-		redirect := expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "invalid_request")
-		if got := redirect.Query().Get("error_description"); !strings.Contains(got, "prompt") {
-			t.Fatalf("expected prompt error, got %q", got)
+				redirect := expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "invalid_request")
+				if got := redirect.Query().Get("error_description"); !strings.Contains(got, "prompt") {
+					t.Fatalf("expected prompt error, got %q", got)
+				}
+			})
+		}
+	})
+
+	t.Run("rejects invalid max_age values", func(t *testing.T) {
+		for _, maxAge := range []string{"-1", "1.5"} {
+			t.Run(maxAge, func(t *testing.T) {
+				request := newDefaultConfidentialAuthorizationRequest("invalid-max-age")
+				params := authorizeParams(request)
+				params.Set("max_age", maxAge)
+
+				redirect := expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "invalid_request")
+				if got := redirect.Query().Get("error_description"); !strings.Contains(got, "max_age") {
+					t.Fatalf("expected max_age error, got %q", got)
+				}
+			})
 		}
 	})
 
@@ -303,6 +323,52 @@ func testAuthenticationRequestValidation(t *testing.T) {
 		if got := redirect.Query().Get("error_description"); !strings.Contains(got, "id_token_hint") {
 			t.Fatalf("expected id_token_hint mismatch error, got %q", got)
 		}
+	})
+
+	t.Run("returns login_required when the active session does not match the id token hint", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users = append(config.Users, userConfig{
+			Label:         "BOB",
+			Username:      "bob",
+			Password:      "hunter2",
+			Sub:           "bob-subject",
+			Name:          "Bob Example",
+			Email:         "bob@example.com",
+			EmailVerified: true,
+		})
+		provider := startProvider(t, config)
+		source := authorizeAndExchange(t, provider, newDefaultConfidentialAuthorizationRequest("id-token-hint-session-mismatch-source"), tokenRequest{
+			ClientID:     webClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: pkceVerifier("id-token-hint-session-mismatch-source"),
+		})
+
+		browser := newProviderBrowser(t, provider)
+		loginRequest := newDefaultConfidentialAuthorizationRequest("id-token-hint-session-mismatch-login")
+		resp := browser.getAuthorize(t, authorizeParams(loginRequest))
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		expectAuthorizationCodeRedirect(t, submitLoginForm(t, browser, body, "bob", "hunter2"), http.StatusSeeOther, loginRequest.RedirectURI, loginRequest.State, provider.issuer)
+
+		request := newDefaultConfidentialAuthorizationRequest("id-token-hint-session-mismatch")
+		request.Prompt = "none"
+		params := authorizeParams(request)
+		code := expectAuthorizationCodeRedirect(t, browser.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer)
+		token := exchangeAuthorizationCode(t, browser, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         code,
+			RedirectURI:  request.RedirectURI,
+			CodeVerifier: request.Verifier,
+		})
+		if claims := verifyIDToken(t, browser, token.IDToken); claims.Sub != "bob-subject" {
+			t.Fatalf("expected an active Bob session, got subject %q", claims.Sub)
+		}
+		params.Set("id_token_hint", source.IDToken)
+
+		expectAuthorizationErrorRedirect(t, browser.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "login_required")
 	})
 
 	t.Run("rejects nonce values that are not valid UTF-8", func(t *testing.T) {
@@ -855,12 +921,47 @@ func testAuthorizationServerObtainsEndUserConsentAuthorization(t *testing.T) {
 		}
 	})
 
+	t.Run("binds consent to the client that requested it", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Clients[1].RedirectURL = webClientRedirect
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("consent-client-binding")
+		request.Prompt = "consent"
+		body := authorizeAndLoginExpectPage(t, provider, request)
+		form := extractHiddenInputs(t, body)
+		form.Set("client_id", otherClientID)
+		form.Set("confirm", "yes")
+		resp := provider.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, body)), form, "", false)
+		expectAuthorizationErrorRedirect(t, resp, http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer, "invalid_request")
+	})
+
+	t.Run("binds consent to the redirect uri that requested it", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Clients[0].RedirectURL += " " + otherClientRedirect
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("consent-redirect-binding")
+		request.Prompt = "consent"
+		body := authorizeAndLoginExpectPage(t, provider, request)
+		form := extractHiddenInputs(t, body)
+		form.Set("redirect_uri", otherClientRedirect)
+		form.Set("confirm", "yes")
+		resp := provider.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, body)), form, "", false)
+		expectAuthorizationErrorRedirect(t, resp, http.StatusSeeOther, otherClientRedirect, request.State, provider.issuer, "invalid_request")
+	})
+
 	t.Run("rejects consent after the browser session expires", func(t *testing.T) {
 		provider := startProvider(t, defaultProviderConfig())
 		request := newDefaultConfidentialAuthorizationRequest("consent-expired-session")
 		request.Prompt = "consent"
 		body := authorizeAndLoginExpectPage(t, provider, request)
 		provider.expireSessionMax(t)
+		expectAuthorizationErrorRedirect(t, submitConsentForm(t, provider, body, "yes"), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer, "invalid_request")
+	})
+
+	t.Run("rejects consent after the pending authorization code expires", func(t *testing.T) {
+		body := authorizeAndLoginExpectPage(t, provider, request)
+		pending := extractHiddenInputValue(t, body, "code")
+		provider.expireAuthorizationCode(t, pending)
 		expectAuthorizationErrorRedirect(t, submitConsentForm(t, provider, body, "yes"), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer, "invalid_request")
 	})
 }
@@ -1900,6 +2001,41 @@ func testIDToken(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("rejects invalid issuer urls", func(t *testing.T) {
+		for _, issuer := range []string{
+			"http://127.0.0.1/issuer?tenant=alpha",
+			"http://127.0.0.1/issuer#fragment",
+			"/issuer",
+			"https:/issuer",
+			"https:///issuer",
+			"ftp://127.0.0.1/issuer",
+			"http://user:password@127.0.0.1/issuer",
+			"http://127.0.0.1/%invalid",
+		} {
+			t.Run(issuer, func(t *testing.T) {
+				environ := []string{
+					"SIMPLE_IDP_ISSUER=" + issuer,
+					"SIMPLE_IDP_CLIENT_WEB_ID=" + webClientID,
+					"SIMPLE_IDP_CLIENT_WEB_SECRET=" + webClientSecret,
+					"SIMPLE_IDP_USER_ALICE_USERNAME=" + testUsername,
+					"SIMPLE_IDP_USER_ALICE_PASSWORD=" + testPassword,
+				}
+				_, _, err := newIdentityProvider(environ, func(name string) string {
+					for _, item := range environ {
+						key, value, _ := strings.Cut(item, "=")
+						if key == name {
+							return value
+						}
+					}
+					return ""
+				}, os.ReadFile)
+				if err == nil || !strings.Contains(err.Error(), "SIMPLE_IDP_ISSUER") {
+					t.Fatalf("expected invalid issuer error, got %v", err)
+				}
+			})
+		}
+	})
 }
 
 func testTokenEndpointIDToken(t *testing.T) {

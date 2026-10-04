@@ -105,6 +105,41 @@ func testOAuth21ClientIdentifier(t *testing.T) {
 	})
 }
 
+func testOAuth21RegistrationRequirements(t *testing.T) {
+	t.Run("rejects invalid registered redirect uris", func(t *testing.T) {
+		for _, redirectURL := range []string{
+			"http://127.0.0.1/callback#fragment",
+			"http://127.0.0.1/callback#",
+			"/callback",
+			"https:/callback",
+			"https:///callback",
+			"ftp://127.0.0.1/callback",
+			"http://user:password@127.0.0.1/callback",
+			"http://127.0.0.1/%invalid",
+		} {
+			t.Run(redirectURL, func(t *testing.T) {
+				environ := []string{
+					"SIMPLE_IDP_CLIENT_WEB_ID=" + webClientID,
+					"SIMPLE_IDP_CLIENT_WEB_SECRET=" + webClientSecret,
+					"SIMPLE_IDP_CLIENT_WEB_REDIRECT_URL=" + redirectURL,
+				}
+				_, err := loadClients(environ, func(name string) string {
+					for _, item := range environ {
+						key, value, _ := strings.Cut(item, "=")
+						if key == name {
+							return value
+						}
+					}
+					return ""
+				})
+				if err == nil || !strings.Contains(err.Error(), "redirect URL") {
+					t.Fatalf("expected invalid redirect URL error, got %v", err)
+				}
+			})
+		}
+	})
+}
+
 func testOAuth21PreventingCSRFAttacks(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 
@@ -1196,6 +1231,32 @@ func testOAuth21LoopbackInterfaceRedirection(t *testing.T) {
 		body := readBody(t, resp)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
+		}
+	})
+
+	t.Run("rejects non-loopback redirect uris for public clients", func(t *testing.T) {
+		for _, redirectURL := range []string{
+			"https://rp.example/callback",
+			nativeClientRedirect + " https://rp.example/callback",
+		} {
+			t.Run(redirectURL, func(t *testing.T) {
+				environ := []string{
+					"SIMPLE_IDP_CLIENT_NATIVE_ID=" + nativeClientID,
+					"SIMPLE_IDP_CLIENT_NATIVE_REDIRECT_URL=" + redirectURL,
+				}
+				_, err := loadClients(environ, func(name string) string {
+					for _, item := range environ {
+						key, value, _ := strings.Cut(item, "=")
+						if key == name {
+							return value
+						}
+					}
+					return ""
+				})
+				if err == nil || !strings.Contains(err.Error(), "loopback redirect URLs") {
+					t.Fatalf("expected loopback redirect URL error, got %v", err)
+				}
+			})
 		}
 	})
 }
