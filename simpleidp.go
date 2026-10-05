@@ -11,6 +11,7 @@
 // SIMPLE_IDP_LOGO                   - logo URL or data URI shown instead of the title (default: none)
 // SIMPLE_IDP_FAVICON                - favicon URL or data URI (default: blank icon)
 // SIMPLE_IDP_ACCENT_COLOR           - accent color for the pages (default: "oklch(49% 0.19 264)")
+// SIMPLE_IDP_COLOR_SCHEME           - CSS color-scheme value for the pages (default: "light dark")
 // SIMPLE_IDP_EDIT_PROFILE           - let users edit their profile, not persisted (default: "false")
 // SIMPLE_IDP_SESSION_IDLE_TTL       - session idle timeout (default: "30m")
 // SIMPLE_IDP_SESSION_MAX_TTL        - session maximum lifetime (default: "10h")
@@ -235,6 +236,7 @@ type identityProvider struct {
 	logo                template.URL
 	favicon             template.URL
 	accentColor         template.CSS
+	colorScheme         string
 	editProfile         bool
 	sessionIdleTTL      time.Duration
 	sessionMaxTTL       time.Duration
@@ -284,6 +286,7 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 	logo := template.URL(envOr(lookupEnv, "SIMPLE_IDP_LOGO", ""))                                   // #nosec G203
 	favicon := template.URL(envOr(lookupEnv, "SIMPLE_IDP_FAVICON", ""))                             // #nosec G203
 	accentColor := template.CSS(envOr(lookupEnv, "SIMPLE_IDP_ACCENT_COLOR", "oklch(49% 0.19 264)")) // #nosec G203
+	colorScheme := envOr(lookupEnv, "SIMPLE_IDP_COLOR_SCHEME", "light dark")
 	editProfile := lookupEnv("SIMPLE_IDP_EDIT_PROFILE") == "true"
 	sessionIdleTTL, err := envDuration(lookupEnv, "SIMPLE_IDP_SESSION_IDLE_TTL", 30*time.Minute)
 	if err != nil {
@@ -326,6 +329,7 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 		logo:                logo,
 		favicon:             favicon,
 		accentColor:         accentColor,
+		colorScheme:         colorScheme,
 		editProfile:         editProfile,
 		sessionIdleTTL:      sessionIdleTTL,
 		sessionMaxTTL:       sessionMaxTTL,
@@ -1144,6 +1148,7 @@ type formPage struct {
 	Logo        template.URL
 	Favicon     template.URL
 	AccentColor template.CSS
+	ColorScheme string
 	Nonce       string
 	Action      string
 	Message     string
@@ -1163,7 +1168,7 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 <html lang="en">
 <head>
 	<meta charset="utf-8">
-	<meta name="color-scheme" content="light dark">
+	<meta name="color-scheme" content="{{.ColorScheme}}">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>{{.Title}}</title>
 	{{- if .Favicon}}
@@ -1171,7 +1176,7 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 	{{- end}}
 	<style nonce="{{.Nonce}}">
 		:root {
-			color-scheme: light dark;
+			color-scheme: {{.ColorScheme}};
 			--color-accent-base: {{.AccentColor}};
 			--color-accent-light: oklch(from var(--color-accent-base) l c h);
 			--color-accent-dark: oklch(from var(--color-accent-base) calc(l + .05) c h);
@@ -1419,6 +1424,7 @@ func (p *identityProvider) renderFormPage(w http.ResponseWriter, r *http.Request
 	page.Logo = p.logo
 	page.Favicon = p.favicon
 	page.AccentColor = p.accentColor
+	page.ColorScheme = p.colorScheme
 	page.Nonce = rand.Text()
 	switch {
 	case page.Message != "" && page.Error != "":

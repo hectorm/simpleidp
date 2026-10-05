@@ -39,6 +39,7 @@ All configuration is done through environment variables. At least one client and
 | `SIMPLE_IDP_LOGO`                   | Logo URL or data URI shown instead of the title (default: none)   |
 | `SIMPLE_IDP_FAVICON`                | Favicon URL or data URI (default: blank icon)                     |
 | `SIMPLE_IDP_ACCENT_COLOR`           | Accent color for the pages (default `oklch(49% 0.19 264)`)        |
+| `SIMPLE_IDP_COLOR_SCHEME`           | CSS `color-scheme` value for the pages (default `light dark`)     |
 | `SIMPLE_IDP_EDIT_PROFILE`           | Let users edit their profile, not persisted (default `false`)     |
 | `SIMPLE_IDP_SESSION_IDLE_TTL`       | Session idle timeout (default `30m`)                              |
 | `SIMPLE_IDP_SESSION_MAX_TTL`        | Session maximum lifetime (default `10h`)                          |

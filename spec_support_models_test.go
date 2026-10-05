@@ -45,6 +45,7 @@ type providerConfig struct {
 	EditProfile    bool
 	Logo           string
 	Favicon        string
+	ColorScheme    string
 	AccessTokenTTL time.Duration
 	Clients        []clientConfig
 	Users          []userConfig

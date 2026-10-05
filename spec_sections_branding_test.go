@@ -95,6 +95,32 @@ func testBranding(t *testing.T) {
 			t.Fatalf("page title mismatch: got %q, want %q", got, testTitle)
 		}
 	})
+
+	t.Run("applies the configured color scheme", func(t *testing.T) {
+		for _, testCase := range []struct {
+			name        string
+			colorScheme string
+			want        string
+		}{
+			{name: "default", want: "light dark"},
+			{name: "configured", colorScheme: "only light", want: "only light"},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				config := defaultProviderConfig()
+				config.ColorScheme = testCase.colorScheme
+				provider := startProvider(t, config)
+				body := fetchLoginForm(t, provider)
+				for _, want := range []string{
+					`<meta name="color-scheme" content="` + testCase.want + `">`,
+					"color-scheme: " + testCase.want + ";",
+				} {
+					if !strings.Contains(string(body), want) {
+						t.Fatalf("expected color scheme %q, got body=%s", want, body)
+					}
+				}
+			})
+		}
+	})
 }
 
 func extractLogo(t *testing.T, body []byte) (src, alt string) {

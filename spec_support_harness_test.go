@@ -101,6 +101,9 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 	if config.Favicon != "" {
 		env = append(env, "SIMPLE_IDP_FAVICON="+config.Favicon)
 	}
+	if config.ColorScheme != "" {
+		env = append(env, "SIMPLE_IDP_COLOR_SCHEME="+config.ColorScheme)
+	}
 	if config.AccessTokenTTL != 0 {
 		env = append(env, "SIMPLE_IDP_ACCESS_TOKEN_TTL="+config.AccessTokenTTL.String())
 	}
