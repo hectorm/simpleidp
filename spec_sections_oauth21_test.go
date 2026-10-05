@@ -7,7 +7,6 @@ import (
 	"encoding/json/v2"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -725,15 +724,7 @@ func testOAuth21IssueShortLivedBearerTokens(t *testing.T) {
 					"SIMPLE_IDP_USER_ALICE_PASSWORD=" + testPassword,
 					"SIMPLE_IDP_ACCESS_TOKEN_TTL=" + lifetime,
 				}
-				_, _, err := newIdentityProvider(environ, func(name string) string {
-					for _, item := range environ {
-						key, value, _ := strings.Cut(item, "=")
-						if key == name {
-							return value
-						}
-					}
-					return ""
-				}, os.ReadFile)
+				_, err := newIdentityProviderFromEnv(environ)
 				if err == nil || !strings.Contains(err.Error(), "whole number of seconds") {
 					t.Fatalf("expected whole-second lifetime error, got %v", err)
 				}

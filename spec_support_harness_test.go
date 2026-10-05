@@ -101,11 +101,17 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 	if config.Favicon != "" {
 		env = append(env, "SIMPLE_IDP_FAVICON="+config.Favicon)
 	}
+	if config.AccentColor != "" {
+		env = append(env, "SIMPLE_IDP_ACCENT_COLOR="+config.AccentColor)
+	}
 	if config.ColorScheme != "" {
 		env = append(env, "SIMPLE_IDP_COLOR_SCHEME="+config.ColorScheme)
 	}
 	if config.AccessTokenTTL != 0 {
 		env = append(env, "SIMPLE_IDP_ACCESS_TOKEN_TTL="+config.AccessTokenTTL.String())
+	}
+	if config.KeyID != "" {
+		env = append(env, "SIMPLE_IDP_KEY_ID="+config.KeyID)
 	}
 	for _, client := range config.Clients {
 		prefix := "SIMPLE_IDP_CLIENT_" + client.Label + "_"
@@ -207,6 +213,19 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 	waitForProviderReady(t, provider)
 
 	return provider
+}
+
+func newIdentityProviderFromEnv(environ []string) (*identityProvider, error) {
+	_, idp, err := newIdentityProvider(environ, func(name string) string {
+		for _, item := range environ {
+			key, value, _ := strings.Cut(item, "=")
+			if key == name {
+				return value
+			}
+		}
+		return ""
+	}, os.ReadFile)
+	return idp, err
 }
 
 func waitForProviderReady(t *testing.T, provider *providerProcess) {

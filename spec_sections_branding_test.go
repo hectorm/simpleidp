@@ -27,16 +27,16 @@ func testBranding(t *testing.T) {
 	})
 
 	t.Run("replaces the title with the logo on every page", func(t *testing.T) {
-		for _, tc := range []struct {
+		for _, testCase := range []struct {
 			name string
 			logo string
 		}{
 			{name: "https", logo: "https://cdn.example.com/logo.svg?v=1&theme=dark"},
 			{name: "data URI", logo: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4="},
 		} {
-			t.Run(tc.name, func(t *testing.T) {
+			t.Run(testCase.name, func(t *testing.T) {
 				config := defaultProviderConfig()
-				config.Logo = tc.logo
+				config.Logo = testCase.logo
 				provider := startProvider(t, config)
 
 				req, err := http.NewRequest(http.MethodGet, provider.endpoint("/login"), nil)
@@ -48,7 +48,7 @@ func testBranding(t *testing.T) {
 				if resp.StatusCode != http.StatusOK {
 					t.Fatalf("login page status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
 				}
-				expectLogo(t, body, tc.logo)
+				expectLogo(t, body, testCase.logo)
 				if !strings.Contains(string(body), "<title>"+testTitle+"</title>") {
 					t.Fatalf("expected the document title to keep the configured title, got body=%s", body)
 				}
@@ -57,7 +57,7 @@ func testBranding(t *testing.T) {
 				}
 
 				_ = authorizeAndLogin(t, provider, newDefaultConfidentialAuthorizationRequest("branding-logo"))
-				expectLogo(t, fetchProfilePage(t, provider), tc.logo)
+				expectLogo(t, fetchProfilePage(t, provider), testCase.logo)
 
 				request := newDefaultConfidentialAuthorizationRequest("branding-consent")
 				request.Prompt = "consent"
@@ -66,9 +66,9 @@ func testBranding(t *testing.T) {
 				if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `data-testid="page-consent"`) {
 					t.Fatalf("expected consent form, got %s; body=%s", resp.Status, body)
 				}
-				expectLogo(t, body, tc.logo)
+				expectLogo(t, body, testCase.logo)
 
-				expectLogo(t, fetchLogoutForm(t, provider, url.Values{}), tc.logo)
+				expectLogo(t, fetchLogoutForm(t, provider, url.Values{}), testCase.logo)
 			})
 		}
 	})
@@ -93,6 +93,27 @@ func testBranding(t *testing.T) {
 		}
 		if got := extractPageTitle(t, body); got != testTitle {
 			t.Fatalf("page title mismatch: got %q, want %q", got, testTitle)
+		}
+	})
+
+	t.Run("applies the configured accent color", func(t *testing.T) {
+		for _, testCase := range []struct {
+			name        string
+			accentColor string
+			want        string
+		}{
+			{name: "default", want: "oklch(49% 0.19 264)"},
+			{name: "configured", accentColor: "#c2410c", want: "#c2410c"},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				config := defaultProviderConfig()
+				config.AccentColor = testCase.accentColor
+				provider := startProvider(t, config)
+				body := fetchLoginForm(t, provider)
+				if want := "--color-accent-base: " + testCase.want + ";"; !strings.Contains(string(body), want) {
+					t.Fatalf("expected accent color %q, got body=%s", want, body)
+				}
+			})
 		}
 	})
 

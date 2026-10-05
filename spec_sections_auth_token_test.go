@@ -10,7 +10,6 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -2122,15 +2121,7 @@ func testIDToken(t *testing.T) {
 					"SIMPLE_IDP_USER_ALICE_USERNAME=" + testUsername,
 					"SIMPLE_IDP_USER_ALICE_PASSWORD=" + testPassword,
 				}
-				_, _, err := newIdentityProvider(environ, func(name string) string {
-					for _, item := range environ {
-						key, value, _ := strings.Cut(item, "=")
-						if key == name {
-							return value
-						}
-					}
-					return ""
-				}, os.ReadFile)
+				_, err := newIdentityProviderFromEnv(environ)
 				if err == nil || !strings.Contains(err.Error(), "SIMPLE_IDP_ISSUER") {
 					t.Fatalf("expected invalid issuer error, got %v", err)
 				}

@@ -6,6 +6,8 @@ package simpleidp
 
 import (
 	"cmp"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -16,6 +18,7 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -851,6 +854,109 @@ func testSigning(t *testing.T) {
 		}
 		if bits := key.N.BitLen(); bits != 3072 {
 			t.Fatalf("generated key size mismatch: got %d, want %d", bits, 3072)
+		}
+	})
+
+	t.Run("prefers the base64 signing key over the key file", func(t *testing.T) {
+		var keys [2]*rsa.PrivateKey
+		var ders [2][]byte
+		for i := range keys {
+			var err error
+			if keys[i], err = rsa.GenerateKey(rand.Reader, 2048); err != nil {
+				t.Fatal(err)
+			}
+			if ders[i], err = x509.MarshalPKCS8PrivateKey(keys[i]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		loaded, err := loadOrGenerateKey(func(name string) string {
+			switch name {
+			case "SIMPLE_IDP_KEY_B64":
+				return base64.StdEncoding.EncodeToString(ders[0])
+			case "SIMPLE_IDP_KEY_FILE":
+				return "key.pem"
+			}
+			return ""
+		}, func(string) ([]byte, error) {
+			return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: ders[1]}), nil
+		})
+		if err != nil || loaded.N.Cmp(keys[0].N) != 0 {
+			t.Fatalf("expected the base64 signing key to be loaded: %v", err)
+		}
+	})
+
+	t.Run("rejects unusable signing keys", func(t *testing.T) {
+		ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ecDER, err := x509.MarshalPKCS8PrivateKey(ecKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		notPKCS8 := []byte("not a PKCS8 key")
+		for _, testCase := range []struct {
+			name   string
+			source string
+			value  string
+			file   []byte
+			want   string
+		}{
+			{name: "invalid base64", source: "KEY_B64", value: "not base64!", want: "failed to decode SIMPLE_IDP_KEY_B64"},
+			{name: "base64 key that is not PKCS8", source: "KEY_B64", value: base64.StdEncoding.EncodeToString(notPKCS8), want: "failed to parse key"},
+			{name: "base64 key that is not RSA", source: "KEY_B64", value: base64.StdEncoding.EncodeToString(ecDER), want: "is not RSA"},
+			{name: "missing key file", source: "KEY_FILE", value: "missing.pem", want: "failed to read key file"},
+			{name: "key file without a PEM block", source: "KEY_FILE", value: "key.pem", file: []byte("not a PEM file"), want: "no PEM block found"},
+			{name: "key file that is not PKCS8", source: "KEY_FILE", value: "key.pem", file: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: notPKCS8}), want: "failed to parse key"},
+			{name: "key file that is not RSA", source: "KEY_FILE", value: "key.pem", file: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: ecDER}), want: "is not RSA"},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				_, err := loadOrGenerateKey(func(name string) string {
+					if name == "SIMPLE_IDP_"+testCase.source {
+						return testCase.value
+					}
+					return ""
+				}, func(string) ([]byte, error) {
+					if testCase.file == nil {
+						return nil, os.ErrNotExist
+					}
+					return testCase.file, nil
+				})
+				if err == nil || !strings.Contains(err.Error(), testCase.want) {
+					t.Fatalf("expected error containing %q, got %v", testCase.want, err)
+				}
+			})
+		}
+	})
+
+	t.Run("publishes the configured key ID", func(t *testing.T) {
+		for _, testCase := range []struct {
+			name  string
+			keyID string
+			want  string
+		}{
+			{name: "default", want: "simpleidp"},
+			{name: "configured", keyID: "signing-key-1", want: "signing-key-1"},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				config := defaultProviderConfig()
+				config.KeyID = testCase.keyID
+				provider := startProvider(t, config)
+				request := newDefaultConfidentialAuthorizationRequest("signing-key-id")
+				token := authorizeAndExchange(t, provider, request, tokenRequest{
+					ClientID:     request.ClientID,
+					ClientSecret: webClientSecret,
+					CodeVerifier: request.Verifier,
+				})
+				if jwks := fetchJWKS(t, provider); len(jwks.Keys) != 1 || jwks.Keys[0].KeyID != testCase.want {
+					t.Fatalf("expected one jwk with kid %q, got %#v", testCase.want, jwks.Keys)
+				}
+				for _, jwt := range []string{token.IDToken, token.AccessToken} {
+					if header := decodeJWTHeader(t, jwt); header.Kid != testCase.want {
+						t.Fatalf("kid mismatch: got %q, want %q", header.Kid, testCase.want)
+					}
+				}
+			})
 		}
 	})
 }
