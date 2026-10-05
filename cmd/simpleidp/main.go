@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -25,15 +24,16 @@ func main() {
 		slog.SetLogLoggerLevel(level)
 	}
 
-	healthcheck := flag.Bool("healthcheck", false, "check HTTP server health and exit")
-	flag.Parse()
-
-	if *healthcheck {
+	switch {
+	case len(os.Args) == 2 && os.Args[1] == "healthcheck":
 		if err := checkHealth(os.Getenv("SIMPLE_IDP_LISTEN")); err != nil {
 			slog.Error("healthcheck failed", "error", err)
 			os.Exit(1)
 		}
 		return
+	case len(os.Args) > 1:
+		slog.Error("unexpected arguments", "args", os.Args[1:])
+		os.Exit(2)
 	}
 
 	listen, srv, err := simpleidp.New(os.Environ(), os.Getenv, os.ReadFile)

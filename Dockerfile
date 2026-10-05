@@ -36,6 +36,6 @@ COPY --from=build /rootfs/ /
 
 USER 18227:18227
 
-HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --start-interval=1s --retries=3 CMD ["/simpleidp", "-healthcheck"]
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --start-interval=1s --retries=3 CMD ["/simpleidp", "healthcheck"]
 
 ENTRYPOINT ["/simpleidp"]
