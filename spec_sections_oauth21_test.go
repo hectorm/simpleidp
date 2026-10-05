@@ -390,6 +390,25 @@ func testOAuth21ClientCredentialsRequest(t *testing.T) {
 			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_scope")
 		}
 	})
+
+	t.Run("rejects scopes outside the scope grammar", func(t *testing.T) {
+		for _, scope := range []string{`orders"read`, `orders\read`, "orders\x01read", "orders:réad", "orders:read\tadmin", "orders:read\nadmin", "orders:read\u00a0admin", "orders:read  admin"} {
+			errResp := expectJSONError(t, provider.postToken(t, tokenRequest{
+				ClientID:     webClientID,
+				ClientSecret: webClientSecret,
+				GrantType:    "client_credentials",
+				Scope:        scope,
+			}), http.StatusBadRequest)
+			if errResp.Error != "invalid_scope" {
+				t.Fatalf("error mismatch for scope %q: got %q, want %q", scope, errResp.Error, "invalid_scope")
+			}
+		}
+
+		token := exchangeClientCredentials(t, provider, tokenRequest{ClientID: webClientID, ClientSecret: webClientSecret, Scope: "orders:read !#[]~"})
+		if token.Scope != "orders:read !#[]~" {
+			t.Fatalf("scope mismatch: got %q, want %q", token.Scope, "orders:read !#[]~")
+		}
+	})
 }
 
 func testOAuth21RefreshTokenGrant(t *testing.T) {

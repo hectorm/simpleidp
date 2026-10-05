@@ -1858,12 +1858,15 @@ func (p *identityProvider) exchangeClientCredentials(w http.ResponseWriter, r *h
 		writeTokenError(w, http.StatusBadRequest, "unauthorized_client", "Public clients cannot use the client credentials grant")
 		return
 	}
-	scopes := strings.Fields(r.PostForm.Get("scope"))
-	if slices.Contains(scopes, "openid") {
+	scope := r.PostForm.Get("scope")
+	if !isValidScope(scope) {
+		writeTokenError(w, http.StatusBadRequest, "invalid_scope", "Malformed scope")
+		return
+	}
+	if slices.Contains(strings.Fields(scope), "openid") {
 		writeTokenError(w, http.StatusBadRequest, "invalid_scope", "The openid scope requires an end-user")
 		return
 	}
-	scope := strings.Join(scopes, " ")
 
 	issuedAt := time.Now()
 	accessTokenValue, err := p.mintAccessToken(client, user{}, scope, issuedAt)
@@ -2592,6 +2595,13 @@ func validateRefreshScope(requested, granted string) (string, bool) {
 		return granted, true
 	}
 	return strings.Join(kept, " "), true
+}
+
+func isValidScope(scope string) bool {
+	if scope != strings.Join(strings.Fields(scope), " ") {
+		return false
+	}
+	return !strings.ContainsFunc(scope, func(c rune) bool { return c < ' ' || c > '~' || c == '"' || c == '\\' })
 }
 
 func hasPromptValue(prompt, want string) bool {
