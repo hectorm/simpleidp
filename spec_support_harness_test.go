@@ -89,11 +89,17 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 	env := []string{
 		"SIMPLE_IDP_LISTEN=" + listenAddr,
 		"SIMPLE_IDP_ISSUER=" + issuer,
-		"SIMPLE_IDP_TITLE=Integration Test Provider",
+		"SIMPLE_IDP_TITLE=" + testTitle,
 		"SIMPLE_IDP_KEY_B64=" + signingKey,
 	}
 	if config.EditProfile {
 		env = append(env, "SIMPLE_IDP_EDIT_PROFILE=true")
+	}
+	if config.Logo != "" {
+		env = append(env, "SIMPLE_IDP_LOGO="+config.Logo)
+	}
+	if config.Favicon != "" {
+		env = append(env, "SIMPLE_IDP_FAVICON="+config.Favicon)
 	}
 	if config.AccessTokenTTL != 0 {
 		env = append(env, "SIMPLE_IDP_ACCESS_TOKEN_TTL="+config.AccessTokenTTL.String())
@@ -1287,6 +1293,16 @@ func extractHiddenInputs(t *testing.T, body []byte) url.Values {
 		t.Fatalf("failed to extract hidden inputs from body:\n%s", body)
 	}
 	return inputs
+}
+
+func extractPageTitle(t *testing.T, body []byte) string {
+	t.Helper()
+
+	matches := regexp.MustCompile(`(?s)<h1 id="page-title" data-testid="page-title">(.*?)</h1>`).FindSubmatch(body)
+	if len(matches) != 2 {
+		t.Fatalf("failed to extract page title from body:\n%s", body)
+	}
+	return string(matches[1])
 }
 
 func resolveProviderURL(t *testing.T, issuer, ref string) string {

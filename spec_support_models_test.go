@@ -12,6 +12,7 @@ package simpleidp
 import "time"
 
 const (
+	testTitle             = "Integration Test Provider"
 	testUsername          = "alice"
 	testPassword          = "password"
 	testTOTPKey           = "12345678901234567890"
@@ -42,6 +43,8 @@ var testGroups = []string{"admins", "developers"}
 type providerConfig struct {
 	IssuerPath     string
 	EditProfile    bool
+	Logo           string
+	Favicon        string
 	AccessTokenTTL time.Duration
 	Clients        []clientConfig
 	Users          []userConfig

@@ -8,8 +8,9 @@
 // SIMPLE_IDP_LISTEN                 - listen address (default ":8227")
 // SIMPLE_IDP_ISSUER                 - issuer URL as seen by clients (required)
 // SIMPLE_IDP_TITLE                  - login page title (default: "Simple IdP")
-// SIMPLE_IDP_ACCENT_COLOR           - accent color for the pages (default: "oklch(49% 0.19 264)")
+// SIMPLE_IDP_LOGO                   - logo URL or data URI shown instead of the title (default: none)
 // SIMPLE_IDP_FAVICON                - favicon URL or data URI (default: blank icon)
+// SIMPLE_IDP_ACCENT_COLOR           - accent color for the pages (default: "oklch(49% 0.19 264)")
 // SIMPLE_IDP_EDIT_PROFILE           - let users edit their profile, not persisted (default: "false")
 // SIMPLE_IDP_SESSION_IDLE_TTL       - session idle timeout (default: "30m")
 // SIMPLE_IDP_SESSION_MAX_TTL        - session maximum lifetime (default: "10h")
@@ -231,8 +232,9 @@ type identityProvider struct {
 	issuer              string
 	base                string
 	title               string
-	accentColor         template.CSS
+	logo                template.URL
 	favicon             template.URL
+	accentColor         template.CSS
 	editProfile         bool
 	sessionIdleTTL      time.Duration
 	sessionMaxTTL       time.Duration
@@ -279,8 +281,9 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 	}
 
 	title := envOr(lookupEnv, "SIMPLE_IDP_TITLE", "Simple IdP")
-	accentColor := template.CSS(envOr(lookupEnv, "SIMPLE_IDP_ACCENT_COLOR", "oklch(49% 0.19 264)")) // #nosec G203
+	logo := template.URL(envOr(lookupEnv, "SIMPLE_IDP_LOGO", ""))                                   // #nosec G203
 	favicon := template.URL(envOr(lookupEnv, "SIMPLE_IDP_FAVICON", ""))                             // #nosec G203
+	accentColor := template.CSS(envOr(lookupEnv, "SIMPLE_IDP_ACCENT_COLOR", "oklch(49% 0.19 264)")) // #nosec G203
 	editProfile := lookupEnv("SIMPLE_IDP_EDIT_PROFILE") == "true"
 	sessionIdleTTL, err := envDuration(lookupEnv, "SIMPLE_IDP_SESSION_IDLE_TTL", 30*time.Minute)
 	if err != nil {
@@ -320,8 +323,9 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 		issuer:              issuer,
 		base:                issuerURL.Path,
 		title:               title,
-		accentColor:         accentColor,
+		logo:                logo,
 		favicon:             favicon,
+		accentColor:         accentColor,
 		editProfile:         editProfile,
 		sessionIdleTTL:      sessionIdleTTL,
 		sessionMaxTTL:       sessionMaxTTL,
@@ -1137,8 +1141,9 @@ type formPageLink struct {
 
 type formPage struct {
 	Title       string
-	AccentColor template.CSS
+	Logo        template.URL
 	Favicon     template.URL
+	AccentColor template.CSS
 	Nonce       string
 	Action      string
 	Message     string
@@ -1219,6 +1224,12 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 			font-weight: 600;
 			text-align: center;
 			color: var(--color-text-muted);
+			img {
+				display: block;
+				max-width: 100%;
+				max-height: 4rem;
+				margin-inline: auto;
+			}
 		}
 		p {
 			margin-bottom: 1rem;
@@ -1325,7 +1336,9 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 </head>
 <body>
 	<main aria-labelledby="page-title"{{if .TestID}} data-testid="{{.TestID}}"{{end}}>
-		<h1 id="page-title" data-testid="page-title">{{.Title}}</h1>
+		<h1 id="page-title" data-testid="page-title">
+			{{- if .Logo}}<img src="{{.Logo}}" alt="{{.Title}}" data-testid="logo">{{else}}{{.Title}}{{end -}}
+		</h1>
 		{{- if .Message}}
 		<p id="form-description" data-testid="message">{{.Message}}</p>
 		{{- end}}
@@ -1403,8 +1416,9 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 </html>`))
 
 func (p *identityProvider) renderFormPage(w http.ResponseWriter, r *http.Request, page formPage) {
-	page.AccentColor = p.accentColor
+	page.Logo = p.logo
 	page.Favicon = p.favicon
+	page.AccentColor = p.accentColor
 	page.Nonce = rand.Text()
 	switch {
 	case page.Message != "" && page.Error != "":
