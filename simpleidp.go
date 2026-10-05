@@ -2641,7 +2641,7 @@ func (p *identityProvider) sendBackchannelLogout(client client, user user, sessi
 		slog.Error("back-channel logout request failed", "client_id", client.id, "error", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		slog.Error("back-channel logout rejected", "client_id", client.id, "status", resp.Status)

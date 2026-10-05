@@ -80,7 +80,7 @@ func checkHealth(listen string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("unexpected healthcheck status: %s", resp.Status)
