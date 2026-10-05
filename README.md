@@ -47,6 +47,7 @@ All configuration is done through environment variables. At least one client and
 | `SIMPLE_IDP_KEY_ID`                 | JWKS key ID (default `simpleidp`)                                 |
 | `SIMPLE_IDP_KEY_FILE`               | PEM file for PKCS8 RSA private key (generated in memory if empty) |
 | `SIMPLE_IDP_KEY_B64`                | Base64-encoded PKCS8 RSA private key (alternative to `KEY_FILE`)  |
+| `SIMPLE_IDP_LOG_LEVEL`              | Log level: `debug`, `info`, `warn` or `error` (default `info`)    |
 
 ### Clients
 
@@ -70,6 +71,7 @@ Users are configured the same way as clients, with a label prefix.
 | -------------------------------------------- | -------------------------------------------------- |
 | `SIMPLE_IDP_USER_<LABEL>_USERNAME`           | Login username (required)                          |
 | `SIMPLE_IDP_USER_<LABEL>_PASSWORD`           | Login password (required)                          |
+| `SIMPLE_IDP_USER_<LABEL>_TOTP_SECRET`        | Base32 TOTP secret (default: empty)                |
 | `SIMPLE_IDP_USER_<LABEL>_SUB`                | `sub` claim (default: hex SHA-256 of `<LABEL>`)    |
 | `SIMPLE_IDP_USER_<LABEL>_NAME`               | `name` claim (default: `<USERNAME>`)               |
 | `SIMPLE_IDP_USER_<LABEL>_PREFERRED_USERNAME` | `preferred_username` claim (default: `<USERNAME>`) |

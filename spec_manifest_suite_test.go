@@ -128,9 +128,22 @@ var expectedRFC9068Sections = []string{
 	"8", "8.1", "8.2",
 }
 
+var expectedRFC6238Sections = []string{
+	"1", "1.1", "1.2",
+	"2",
+	"3",
+	"4", "4.1", "4.2",
+	"5", "5.1", "5.2",
+	"6",
+	"7",
+	"8", "8.1", "8.2",
+	"A", "B",
+}
+
 var expectedSimpleIdPSections = []string{
 	"1", "1.1", "1.2", "1.3", "1.4",
 	"2",
+	"3",
 }
 
 type specSection struct {
@@ -184,6 +197,7 @@ func allSpecSections() []specSection {
 	sections = append(sections, rfc7662Sections...)
 	sections = append(sections, rfc7009Sections...)
 	sections = append(sections, rfc9068Sections...)
+	sections = append(sections, rfc6238Sections...)
 	sections = append(sections, simpleIdPSections...)
 	return sections
 }
@@ -254,6 +268,7 @@ func TestSpecCoverageManifest(t *testing.T) {
 		"RFC 7662",
 		"RFC 7009",
 		"RFC 9068",
+		"RFC 6238",
 		"Simple IdP",
 	} {
 		summary := summaries[spec]
@@ -268,5 +283,6 @@ func TestSpecCoverageManifest(t *testing.T) {
 	assertExactManifestSections(t, "RFC 7662", expectedRFC7662Sections, sectionsBySpec["RFC 7662"])
 	assertExactManifestSections(t, "RFC 7009", expectedRFC7009Sections, sectionsBySpec["RFC 7009"])
 	assertExactManifestSections(t, "RFC 9068", expectedRFC9068Sections, sectionsBySpec["RFC 9068"])
+	assertExactManifestSections(t, "RFC 6238", expectedRFC6238Sections, sectionsBySpec["RFC 6238"])
 	assertExactManifestSections(t, "Simple IdP", expectedSimpleIdPSections, sectionsBySpec["Simple IdP"])
 }

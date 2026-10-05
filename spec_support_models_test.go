@@ -14,6 +14,8 @@ import "time"
 const (
 	testUsername          = "alice"
 	testPassword          = "password"
+	testTOTPKey           = "12345678901234567890"
+	testTOTPKeyBase32     = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
 	testSubject           = "alice-subject"
 	testName              = "Alice Example"
 	testPreferredUsername = "alice"
@@ -60,6 +62,7 @@ type userConfig struct {
 	Label             string
 	Username          string
 	Password          string
+	TOTPSecret        string
 	Sub               string
 	Name              string
 	PreferredUsername string

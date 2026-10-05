@@ -9,12 +9,22 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/hectorm/simpleidp"
 )
 
 func main() {
+	if logLevel := os.Getenv("SIMPLE_IDP_LOG_LEVEL"); logLevel != "" {
+		level, ok := map[string]slog.Level{"debug": slog.LevelDebug, "info": slog.LevelInfo, "warn": slog.LevelWarn, "error": slog.LevelError}[strings.ToLower(logLevel)]
+		if !ok {
+			slog.Error("failed to load configuration", "error", errors.New("SIMPLE_IDP_LOG_LEVEL: must be debug, info, warn, or error"))
+			os.Exit(1)
+		}
+		slog.SetLogLoggerLevel(level)
+	}
+
 	healthcheck := flag.Bool("healthcheck", false, "check HTTP server health and exit")
 	flag.Parse()
 

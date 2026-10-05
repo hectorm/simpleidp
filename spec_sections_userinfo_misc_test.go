@@ -1077,6 +1077,209 @@ func testProfileLogin(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("asks users with a TOTP secret for an authentication code", func(t *testing.T) {
+		for _, issuerPath := range []string{"", "/tenant-a"} {
+			config := defaultProviderConfig()
+			config.IssuerPath = issuerPath
+			config.Users[0].TOTPSecret = testTOTPKeyBase32
+			provider := startProvider(t, config)
+			body := fetchTOTPForm(t, provider)
+			_ = fetchLoginForm(t, provider)
+
+			redirect := expectRedirect(t, submitTOTPForm(t, provider, body, currentTOTPCode()), http.StatusSeeOther)
+			assertRedirectTarget(t, redirect, issuerPath+"/")
+			body = fetchProfilePage(t, provider)
+			if !strings.Contains(string(body), testName) || !strings.Contains(string(body), testEmail) {
+				t.Fatalf("expected signed-in profile, got body=%s", body)
+			}
+		}
+	})
+
+	t.Run("allows retrying after an invalid authentication code", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.IssuerPath = "/tenant-a"
+		config.Users[0].TOTPSecret = testTOTPKeyBase32
+		provider := startProvider(t, config)
+		body := fetchTOTPForm(t, provider)
+		resp := submitTOTPForm(t, provider, body, "not-a-code")
+		body = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("authentication code status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if !strings.Contains(string(body), `data-testid="page-totp"`) || !strings.Contains(string(body), "Invalid authentication code") {
+			t.Fatalf("expected TOTP form with an authentication error, got body=%s", body)
+		}
+
+		redirect := expectRedirect(t, submitTOTPForm(t, provider, body, currentTOTPCode()), http.StatusSeeOther)
+		assertRedirectTarget(t, redirect, "/tenant-a/")
+	})
+
+	t.Run("removes expired authentication steps when starting a new one", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users[0].TOTPSecret = testTOTPKeyBase32
+		provider := startProvider(t, config)
+		for range 3 {
+			browser := newProviderBrowser(t, provider)
+			_ = fetchTOTPForm(t, browser)
+		}
+		provider.expirePendingTOTPs(t)
+		_ = fetchTOTPForm(t, provider)
+		if pending := provider.pendingTOTPCount(t); pending != 1 {
+			t.Fatalf("expected only the new authentication step to remain, got %d", pending)
+		}
+	})
+
+	t.Run("keeps at most 10 pending authentication steps per user", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users[0].TOTPSecret = testTOTPKeyBase32
+		provider := startProvider(t, config)
+		first := newProviderBrowser(t, provider)
+		firstBody := fetchTOTPForm(t, first)
+		for range maxPendingTOTPsPerUser {
+			_ = fetchTOTPForm(t, newProviderBrowser(t, provider))
+		}
+		if pending := provider.pendingTOTPCount(t); pending != maxPendingTOTPsPerUser {
+			t.Fatalf("expected %d pending authentication steps, got %d", maxPendingTOTPsPerUser, pending)
+		}
+
+		resp := submitTOTPForm(t, first, firstBody, currentTOTPCode())
+		firstBody = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("authentication code status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, firstBody)
+		}
+		if !strings.Contains(string(firstBody), `data-testid="page-login"`) || !strings.Contains(string(firstBody), "Sign in again to continue") {
+			t.Fatalf("expected the oldest authentication step to be replaced, got body=%s", firstBody)
+		}
+	})
+
+	t.Run("asks for the password again after the authentication step expires", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users[0].TOTPSecret = testTOTPKeyBase32
+		provider := startProvider(t, config)
+		body := fetchTOTPForm(t, provider)
+		provider.expirePendingTOTPs(t)
+		resp := submitTOTPForm(t, provider, body, currentTOTPCode())
+		body = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expired authentication code status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if !strings.Contains(string(body), `data-testid="page-login"`) || !strings.Contains(string(body), "Sign in again to continue") {
+			t.Fatalf("expected login form asking to sign in again, got body=%s", body)
+		}
+
+		resp = submitLoginForm(t, provider, body, testUsername, testPassword)
+		body = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("login status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if !strings.Contains(string(body), `data-testid="page-totp"`) {
+			t.Fatalf("expected TOTP form, got body=%s", body)
+		}
+		redirect := expectRedirect(t, submitTOTPForm(t, provider, body, currentTOTPCode()), http.StatusSeeOther)
+		assertRedirectTarget(t, redirect, "/")
+	})
+
+	t.Run("rejects invalid authentication code forms", func(t *testing.T) {
+		for _, invalid := range []string{"missing csrf token", "invalid csrf token", "other browser csrf token", "missing cookie", "duplicate authentication code"} {
+			t.Run(invalid, func(t *testing.T) {
+				config := defaultProviderConfig()
+				config.Users[0].TOTPSecret = testTOTPKeyBase32
+				provider := startProvider(t, config)
+				body := fetchTOTPForm(t, provider)
+				form := url.Values{
+					"totp":       {currentTOTPCode()},
+					"csrf_token": {extractHiddenInputValue(t, body, "csrf_token")},
+				}
+				browser := provider
+				switch invalid {
+				case "missing csrf token":
+					form.Del("csrf_token")
+				case "invalid csrf token":
+					form.Set("csrf_token", "invalid")
+				case "other browser csrf token":
+					otherBrowser := newProviderBrowser(t, provider)
+					form.Set("csrf_token", extractHiddenInputValue(t, fetchLoginForm(t, otherBrowser), "csrf_token"))
+				case "missing cookie":
+					browser = newProviderBrowser(t, provider)
+				case "duplicate authentication code":
+					form.Add("totp", form.Get("totp"))
+				}
+				resp := browser.postFormURL(t, browser.endpoint("/login"), form, "", false)
+				body = readBody(t, resp)
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Fatalf("invalid authentication code form status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
+				}
+				_ = fetchLoginForm(t, browser)
+			})
+		}
+	})
+
+	t.Run("does not sign in with an authentication code alone", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users[0].TOTPSecret = testTOTPKeyBase32
+		provider := startProvider(t, config)
+		body := fetchLoginForm(t, provider)
+		form := url.Values{
+			"totp":       {currentTOTPCode()},
+			"csrf_token": {extractHiddenInputValue(t, body, "csrf_token")},
+		}
+		resp := provider.postFormURL(t, provider.endpoint("/login"), form, "", false)
+		body = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("authentication code status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if !strings.Contains(string(body), `data-testid="page-login"`) || !strings.Contains(string(body), "Sign in again to continue") {
+			t.Fatalf("expected login form asking to sign in again, got body=%s", body)
+		}
+		_ = fetchLoginForm(t, provider)
+	})
+
+	t.Run("does not let a planted pre-authentication cookie finish the sign-in", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users[0].TOTPSecret = testTOTPKeyBase32
+		provider := startProvider(t, config)
+		attacker := newProviderBrowser(t, provider)
+		attackerBody := fetchLoginForm(t, attacker)
+		provider.copyCookiesFrom(t, attacker)
+		body := fetchTOTPForm(t, provider)
+
+		resp := submitTOTPForm(t, attacker, attackerBody, currentTOTPCode())
+		attackerBody = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("authentication code status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, attackerBody)
+		}
+		if !strings.Contains(string(attackerBody), `data-testid="page-login"`) || !strings.Contains(string(attackerBody), "Sign in again to continue") {
+			t.Fatalf("expected login form asking to sign in again, got body=%s", attackerBody)
+		}
+		_ = fetchLoginForm(t, attacker)
+
+		redirect := expectRedirect(t, submitTOTPForm(t, provider, body, currentTOTPCode()), http.StatusSeeOther)
+		assertRedirectTarget(t, redirect, "/")
+	})
+
+	t.Run("does not let a previous pre-authentication cookie finish the sign-in", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users[0].TOTPSecret = testTOTPKeyBase32
+		provider := startProvider(t, config)
+		staleBody := fetchTOTPForm(t, provider)
+		stale := newProviderBrowser(t, provider)
+		stale.copyCookiesFrom(t, provider)
+		body := fetchTOTPForm(t, provider)
+
+		resp := submitTOTPForm(t, stale, staleBody, currentTOTPCode())
+		staleBody = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("authentication code status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, staleBody)
+		}
+		if !strings.Contains(string(staleBody), `data-testid="page-login"`) || !strings.Contains(string(staleBody), "Sign in again to continue") {
+			t.Fatalf("expected login form asking to sign in again, got body=%s", staleBody)
+		}
+		_ = fetchLoginForm(t, stale)
+
+		redirect := expectRedirect(t, submitTOTPForm(t, provider, body, currentTOTPCode()), http.StatusSeeOther)
+		assertRedirectTarget(t, redirect, "/")
+	})
 }
 
 func testProfileUpdate(t *testing.T) {

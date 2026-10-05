@@ -100,7 +100,7 @@ var oauth21Sections = []specSection{
 	{Spec: "OAuth 2.1", Section: "7.5.2", Title: "Reuse of Authorization Codes", Applicable: true, Run: testOAuth21ReuseOfAuthorizationCodes},
 	{Spec: "OAuth 2.1", Section: "7.5.3", Title: "HTTP 307 Redirect", Applicable: true, Run: testHTTP307Redirects},
 	{Spec: "OAuth 2.1", Section: "7.6", Title: "Ensuring Endpoint Authenticity", Notes: "TLS is out of scope."},
-	{Spec: "OAuth 2.1", Section: "7.7", Title: "Credentials-Guessing Attacks", Notes: "Credential entropy is not a test target, and brute-force protection for passwords and client secrets is not implemented."},
+	{Spec: "OAuth 2.1", Section: "7.7", Title: "Credentials-Guessing Attacks", Applicable: true, Notes: "Failed passwords are throttled per account: after three failures, each further failure doubles the wait before the next attempt, from one second up to 15 minutes. Generated token entropy is not a test target, and client secrets are not throttled.", Run: testOAuth21CredentialsGuessingAttacks},
 	{Spec: "OAuth 2.1", Section: "7.8", Title: "Phishing Attacks", Notes: "Phishing guidance is not a test target, and TLS is out of scope."},
 	{Spec: "OAuth 2.1", Section: "7.9", Title: "Cross-Site Request Forgery", Applicable: true, Notes: "The product round-trips state and requires PKCE; CSRF protection on the product's login and consent forms is covered by OIDC Core 1.0 sections 3.1.2.3 and 3.1.2.4.", Run: testOAuth21PreventingCSRFAttacks},
 	{Spec: "OAuth 2.1", Section: "7.10", Title: "Clickjacking", Applicable: true, Run: testOAuth21Clickjacking},

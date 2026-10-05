@@ -11,11 +11,14 @@ package simpleidp
 import (
 	"context"
 	"crypto"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1" // #nosec G505
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
@@ -127,6 +130,9 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 			prefix+"EMAIL="+user.Email,
 			prefix+"EMAIL_VERIFIED="+strconv.FormatBool(user.EmailVerified),
 		)
+		if user.TOTPSecret != "" {
+			env = append(env, prefix+"TOTP_SECRET="+user.TOTPSecret)
+		}
 		if user.PreferredUsername != "" {
 			env = append(env, prefix+"PREFERRED_USERNAME="+user.PreferredUsername)
 		}
@@ -449,6 +455,16 @@ func newProviderBrowser(t *testing.T, provider *providerProcess) *providerProces
 		browser.redirectless.CloseIdleConnections()
 	})
 	return browser
+}
+
+func (p *providerProcess) copyCookiesFrom(t *testing.T, other *providerProcess) {
+	t.Helper()
+
+	issuerURL, err := url.Parse(p.endpoint("/"))
+	if err != nil {
+		t.Fatalf("failed to parse issuer URL: %v", err)
+	}
+	p.http.Jar.SetCookies(issuerURL, other.http.Jar.Cookies(issuerURL))
 }
 
 func fetchDiscovery(t *testing.T, provider *providerProcess) discoveryDocument {
@@ -848,6 +864,62 @@ func introspectToken(t *testing.T, provider *providerProcess, request introspect
 	return result
 }
 
+func (p *providerProcess) pendingTOTPCount(t *testing.T) int {
+	t.Helper()
+
+	p.idp.mu.Lock()
+	defer p.idp.mu.Unlock()
+	return len(p.idp.pendingTOTPs)
+}
+
+func (p *providerProcess) expirePendingTOTPs(t *testing.T) {
+	t.Helper()
+
+	p.idp.mu.Lock()
+	defer p.idp.mu.Unlock()
+	for preAuthID, pending := range p.idp.pendingTOTPs {
+		pending.createdAt = time.Now().Add(-loginActionTTL - time.Second)
+		p.idp.pendingTOTPs[preAuthID] = pending
+	}
+}
+
+func (p *providerProcess) validateTOTPAt(t *testing.T, code string, now time.Time, lastStep int64) (int64, bool) {
+	t.Helper()
+
+	p.idp.mu.Lock()
+	defer p.idp.mu.Unlock()
+	p.idp.lastTOTPSteps["ALICE"] = lastStep
+	if !p.idp.validateTOTP("ALICE", code, now) {
+		return 0, false
+	}
+	return p.idp.lastTOTPSteps["ALICE"], true
+}
+
+func (p *providerProcess) isThrottledAt(t *testing.T, now time.Time, failures int, lastFailure time.Time, maxDelay time.Duration) bool {
+	t.Helper()
+
+	p.idp.mu.Lock()
+	defer p.idp.mu.Unlock()
+	p.idp.throttles["throttle-test"] = throttle{failures: failures, lastFailure: lastFailure}
+	return p.idp.throttleWait("throttle-test", maxDelay, now) > 0
+}
+
+func (p *providerProcess) agePasswordThrottle(t *testing.T, failures int, age time.Duration) {
+	t.Helper()
+
+	p.idp.mu.Lock()
+	defer p.idp.mu.Unlock()
+	p.idp.throttles["password:ALICE"] = throttle{failures: failures, lastFailure: time.Now().Add(-age)}
+}
+
+func (p *providerProcess) ageTOTPThrottle(t *testing.T, failures int, age time.Duration) {
+	t.Helper()
+
+	p.idp.mu.Lock()
+	defer p.idp.mu.Unlock()
+	p.idp.throttles["totp:ALICE"] = throttle{failures: failures, lastFailure: time.Now().Add(-age)}
+}
+
 func (p *providerProcess) currentSessionCookie(t *testing.T) *http.Cookie {
 	t.Helper()
 
@@ -1153,6 +1225,18 @@ func pkceChallenge(verifier string) string {
 func pkceVerifier(seed string) string {
 	sum := sha256.Sum256([]byte("pkce-verifier:" + seed))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func totpCodeAt(step int64) string {
+	mac := hmac.New(sha1.New, []byte(testTOTPKey))
+	_ = binary.Write(mac, binary.BigEndian, step)
+	sum := mac.Sum(nil)
+	offset := sum[len(sum)-1] & 0x0f
+	return fmt.Sprintf("%06d", (binary.BigEndian.Uint32(sum[offset:])&0x7fffffff)%1000000)
+}
+
+func currentTOTPCode() string {
+	return totpCodeAt(time.Now().Unix() / totpPeriodSeconds)
 }
 
 func accessTokenHash(accessToken string) string {

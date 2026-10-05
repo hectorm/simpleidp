@@ -10,12 +10,15 @@ package simpleidp
 // RFC 7662: https://www.rfc-editor.org/rfc/rfc7662.txt
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json/v2"
 	"io"
+	"log"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -121,6 +124,57 @@ func assertBearerChallenge(t *testing.T, header, errorCode string) map[string]st
 		}
 	}
 	return attributes
+}
+
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func captureLogs(t *testing.T) *logBuffer {
+	t.Helper()
+
+	logs := &logBuffer{}
+	previousLogger, previousWriter, previousFlags := slog.Default(), log.Writer(), log.Flags()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+		ReplaceAttr: func(groups []string, attr slog.Attr) slog.Attr {
+			if len(groups) == 0 && attr.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return attr
+		},
+	})))
+	t.Cleanup(func() {
+		slog.SetDefault(previousLogger)
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	})
+	return logs
+}
+
+func expectLogRecord(t *testing.T, logs *logBuffer, level, message string) map[string]any {
+	t.Helper()
+
+	for line := range strings.Lines(logs.String()) {
+		if record := decodeJSONMap(t, []byte(line)); record["level"] == level && record["msg"] == message {
+			return record
+		}
+	}
+	t.Fatalf("expected %s log %q, got:\n%s", level, message, logs.String())
+	return nil
 }
 
 func replaceJWTClaims(t *testing.T, provider *providerProcess, token string, claims map[string]any) string {
@@ -245,6 +299,14 @@ func submitLoginForm(t *testing.T, provider *providerProcess, formBody []byte, u
 	return provider.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, formBody)), form, "", false)
 }
 
+func submitTOTPForm(t *testing.T, provider *providerProcess, formBody []byte, code string) *http.Response {
+	t.Helper()
+
+	form := extractHiddenInputs(t, formBody)
+	form.Set("totp", code)
+	return provider.postFormURL(t, resolveProviderURL(t, provider.issuer, extractFormAction(t, formBody)), form, "", false)
+}
+
 func submitConsentForm(t *testing.T, provider *providerProcess, formBody []byte, confirm string) *http.Response {
 	t.Helper()
 
@@ -345,6 +407,21 @@ func fetchLoginForm(t *testing.T, provider *providerProcess) []byte {
 	}
 	if !strings.Contains(string(body), `data-testid="page-login"`) {
 		t.Fatalf("expected login form, got body=%s", body)
+	}
+	return body
+}
+
+func fetchTOTPForm(t *testing.T, provider *providerProcess) []byte {
+	t.Helper()
+
+	body := fetchLoginForm(t, provider)
+	resp := submitLoginForm(t, provider, body, testUsername, testPassword)
+	body = readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("TOTP form status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+	}
+	if !strings.Contains(string(body), `data-testid="page-totp"`) {
+		t.Fatalf("expected TOTP form, got body=%s", body)
 	}
 	return body
 }

@@ -7,6 +7,7 @@ package simpleidp
 import (
 	"encoding/json/v2"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -803,6 +804,94 @@ func testAuthorizationServerAuthenticatesEndUser(t *testing.T) {
 		}
 		if preAuthIDs[0] != preAuthIDs[1] {
 			t.Fatalf("expected the pre-auth ID to be kept, got %q then %q", preAuthIDs[0], preAuthIDs[1])
+		}
+	})
+
+	t.Run("asks users with a TOTP secret for an authentication code", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users[0].TOTPSecret = testTOTPKeyBase32
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("totp-authentication")
+		body := authorizeAndLoginExpectPage(t, provider, request)
+		if !strings.Contains(string(body), `data-testid="page-totp"`) {
+			t.Fatalf("expected TOTP form, got body=%s", body)
+		}
+		expectAuthorizationCodeRedirect(t, submitTOTPForm(t, provider, body, currentTOTPCode()), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
+	})
+
+	t.Run("allows retrying after an empty authentication code", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users[0].TOTPSecret = testTOTPKeyBase32
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("totp-empty-code")
+		body := authorizeAndLoginExpectPage(t, provider, request)
+		resp := submitTOTPForm(t, provider, body, "")
+		body = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("authentication code status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if !strings.Contains(string(body), `data-testid="page-totp"`) || !strings.Contains(string(body), "Invalid authentication code") {
+			t.Fatalf("expected TOTP form with an authentication error, got body=%s", body)
+		}
+		expectAuthorizationCodeRedirect(t, submitTOTPForm(t, provider, body, currentTOTPCode()), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
+	})
+
+	t.Run("does not sign in before the authentication code is verified", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users[0].TOTPSecret = testTOTPKeyBase32
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("totp-pending-authentication")
+		_ = authorizeAndLoginExpectPage(t, provider, request)
+
+		request.Prompt = "none"
+		expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "login_required")
+	})
+
+	t.Run("rejects duplicate authentication codes", func(t *testing.T) {
+		for _, method := range []string{"POST query", "POST body"} {
+			t.Run(method, func(t *testing.T) {
+				config := defaultProviderConfig()
+				config.Users[0].TOTPSecret = testTOTPKeyBase32
+				provider := startProvider(t, config)
+				request := newDefaultConfidentialAuthorizationRequest("totp-duplicate-code")
+				body := authorizeAndLoginExpectPage(t, provider, request)
+				params := authorizeParams(request)
+				form := url.Values{
+					"csrf_token": {extractHiddenInputValue(t, body, "csrf_token")},
+					"totp":       {currentTOTPCode(), currentTOTPCode()},
+				}
+
+				var resp *http.Response
+				if method == "POST query" {
+					resp = provider.postAuthorize(t, params, form)
+				} else {
+					maps.Copy(form, params)
+					resp = provider.postAuthorize(t, nil, form)
+				}
+				redirect := expectAuthorizationErrorRedirect(t, resp, http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer, "invalid_request")
+				if got := redirect.Query().Get("error_description"); !strings.Contains(got, "Duplicate parameter") {
+					t.Fatalf("expected duplicate parameter error, got %q", got)
+				}
+			})
+		}
+	})
+
+	t.Run("rejects authentication codes without csrf protection", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users[0].TOTPSecret = testTOTPKeyBase32
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("totp-csrf")
+		_ = authorizeAndLoginExpectPage(t, provider, request)
+
+		resp := provider.postAuthorize(t, authorizeParams(request), url.Values{
+			"totp": {currentTOTPCode()},
+		})
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("authentication code status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
+		}
+		if !strings.Contains(string(body), "Invalid or expired session") {
+			t.Fatalf("expected invalid session error, got body=%s", body)
 		}
 	})
 }

@@ -1013,6 +1013,129 @@ func testOAuth21ReuseOfAuthorizationCodes(t *testing.T) {
 	})
 }
 
+func testOAuth21CredentialsGuessingAttacks(t *testing.T) {
+	t.Run("doubles the wait after each further failed attempt", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		lastFailure := time.Now()
+		for failures, wait := range map[int]time.Duration{
+			0:   0,
+			2:   0,
+			3:   time.Second,
+			4:   2 * time.Second,
+			5:   4 * time.Second,
+			12:  512 * time.Second,
+			13:  15 * time.Minute,
+			100: 15 * time.Minute,
+		} {
+			throttledBefore := provider.isThrottledAt(t, lastFailure.Add(wait-time.Nanosecond), failures, lastFailure, throttle1FAMaxDelay)
+			throttledAt := provider.isThrottledAt(t, lastFailure.Add(wait), failures, lastFailure, throttle1FAMaxDelay)
+			if throttledBefore != (wait > 0) || throttledAt {
+				t.Fatalf("throttle wait mismatch after %d failures: want %s, got throttled before=%t at=%t", failures, wait, throttledBefore, throttledAt)
+			}
+		}
+	})
+
+	t.Run("waits at most 15 minutes between invalid passwords", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		provider.agePasswordThrottle(t, 20, 14*time.Minute)
+		body := fetchLoginForm(t, provider)
+		resp := submitLoginForm(t, provider, body, testUsername, testPassword)
+		body = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("throttled login status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if !strings.Contains(string(body), "Invalid username or password") || strings.Contains(string(body), "Too many failed attempts") {
+			t.Fatalf("expected a generic credentials error for a throttled login, got body=%s", body)
+		}
+
+		provider.agePasswordThrottle(t, 20, 16*time.Minute)
+		redirect := expectRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther)
+		assertRedirectTarget(t, redirect, "/")
+	})
+
+	t.Run("forgets invalid passwords after seven days", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		provider.agePasswordThrottle(t, 20, throttleTTL+time.Minute)
+		body := fetchLoginForm(t, provider)
+		resp := submitLoginForm(t, provider, body, testUsername, "wrong-password")
+		body = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("login status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		redirect := expectRedirect(t, submitLoginForm(t, provider, body, testUsername, testPassword), http.StatusSeeOther)
+		assertRedirectTarget(t, redirect, "/")
+	})
+
+	t.Run("throttles repeated invalid passwords", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		body := fetchLoginForm(t, provider)
+		for range 3 {
+			resp := submitLoginForm(t, provider, body, testUsername, "wrong-password")
+			body = readBody(t, resp)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("login status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+			}
+			if !strings.Contains(string(body), "Invalid username or password") {
+				t.Fatalf("expected invalid credentials message, got body=%s", body)
+			}
+		}
+
+		resp := submitLoginForm(t, provider, body, testUsername, testPassword)
+		body = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("throttled login status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if !strings.Contains(string(body), "Invalid username or password") || strings.Contains(string(body), "Too many failed attempts") {
+			t.Fatalf("expected a generic credentials error for a throttled login, got body=%s", body)
+		}
+		_ = fetchLoginForm(t, provider)
+	})
+
+	t.Run("counts invalid passwords across login sessions", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		for range 3 {
+			browser := newProviderBrowser(t, provider)
+			body := fetchLoginForm(t, browser)
+			resp := submitLoginForm(t, browser, body, testUsername, "wrong-password")
+			body = readBody(t, resp)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("login status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+			}
+			if !strings.Contains(string(body), "Invalid username or password") {
+				t.Fatalf("expected invalid credentials message, got body=%s", body)
+			}
+		}
+
+		body := fetchLoginForm(t, provider)
+		resp := submitLoginForm(t, provider, body, testUsername, testPassword)
+		body = readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("throttled login status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if !strings.Contains(string(body), "Invalid username or password") || strings.Contains(string(body), "Too many failed attempts") {
+			t.Fatalf("expected a generic credentials error for a throttled login, got body=%s", body)
+		}
+		_ = fetchLoginForm(t, provider)
+	})
+
+	t.Run("resets the count after a successful sign-in", func(t *testing.T) {
+		provider := startProvider(t, defaultProviderConfig())
+		for _, browser := range []*providerProcess{provider, newProviderBrowser(t, provider)} {
+			body := fetchLoginForm(t, browser)
+			for range 2 {
+				resp := submitLoginForm(t, browser, body, testUsername, "wrong-password")
+				body = readBody(t, resp)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("login status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+				}
+			}
+			redirect := expectRedirect(t, submitLoginForm(t, browser, body, testUsername, testPassword), http.StatusSeeOther)
+			assertRedirectTarget(t, redirect, "/")
+		}
+	})
+
+}
+
 func testOAuth21InjectionAndInputValidation(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 

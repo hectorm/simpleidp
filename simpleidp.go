@@ -19,6 +19,7 @@
 // SIMPLE_IDP_KEY_ID                 - JWKS key ID (default: "simpleidp")
 // SIMPLE_IDP_KEY_FILE               - PEM file for PKCS8 RSA private key (generated in memory if empty)
 // SIMPLE_IDP_KEY_B64                - base64-encoded PKCS8 RSA private key (alternative to KEY_FILE)
+// SIMPLE_IDP_LOG_LEVEL              - log level: "debug", "info", "warn", or "error" (default: "info")
 //
 // Clients are configured with a label prefix (the label is arbitrary, used only for grouping):
 //
@@ -34,6 +35,7 @@
 //
 // SIMPLE_IDP_USER_<LABEL>_USERNAME           - login username (required)
 // SIMPLE_IDP_USER_<LABEL>_PASSWORD           - login password (required)
+// SIMPLE_IDP_USER_<LABEL>_TOTP_SECRET        - base32 TOTP secret (default: empty)
 // SIMPLE_IDP_USER_<LABEL>_SUB                - "sub" claim (default: hex SHA-256 of <LABEL>)
 // SIMPLE_IDP_USER_<LABEL>_NAME               - "name" claim (default: <USERNAME>)
 // SIMPLE_IDP_USER_<LABEL>_PREFERRED_USERNAME - "preferred_username" claim (default: <USERNAME>)
@@ -56,9 +58,11 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1" // #nosec G505
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/x509"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json/jsontext"
@@ -97,14 +101,22 @@ func New(environ []string, lookupEnv func(string) string, readFile func(string) 
 const (
 	codeTTL                      = time.Minute
 	loginActionTTL               = 5 * time.Minute
+	totpPeriodSeconds            = 30
+	throttleFreeFailures         = 3
+	throttleBaseDelay            = time.Second
+	throttle1FAMaxDelay          = 15 * time.Minute
+	throttle2FAMaxDelay          = 24 * time.Hour
+	throttleTTL                  = 7 * 24 * time.Hour
 	maxFormBodyBytes             = 1 << 20
+	maxLogValueBytes             = 128
+	maxPendingTOTPsPerUser       = 10
 	sessionCookieBaseName        = "simple_idp_session"
 	preAuthSessionCookieBaseName = "simple_idp_preauth_session"
 	resubmitParam                = "resubmitted"
 )
 
 var (
-	authorizeFormFields  = []string{"username", "password", "code", "confirm", "csrf_token"}
+	authorizeFormFields  = []string{"username", "password", "totp", "code", "confirm", "csrf_token"}
 	endSessionFormFields = []string{"confirm", "csrf_token"}
 	authorizeParamNames  = append([]string{
 		"client_id", "redirect_uri", "response_type", "response_mode", "scope", "state",
@@ -132,6 +144,7 @@ type user struct {
 	label             string
 	username          string
 	password          string
+	totpSecret        []byte
 	sub               string
 	name              string
 	preferredUsername string
@@ -188,6 +201,16 @@ type pendingCode struct {
 	consumedAt      time.Time
 }
 
+type pendingTOTP struct {
+	userLabel string
+	createdAt time.Time
+}
+
+type throttle struct {
+	failures    int
+	lastFailure time.Time
+}
+
 type tokenHint struct {
 	sub string
 	aud string
@@ -225,6 +248,9 @@ type identityProvider struct {
 	accessTokens        map[string]accessToken
 	refreshTokens       map[string]refreshToken
 	pendingCodes        map[string]pendingCode
+	pendingTOTPs        map[string]pendingTOTP
+	lastTOTPSteps       map[string]int64
+	throttles           map[string]throttle
 	mu                  sync.Mutex
 }
 
@@ -311,6 +337,9 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 		accessTokens:        map[string]accessToken{},
 		refreshTokens:       map[string]refreshToken{},
 		pendingCodes:        map[string]pendingCode{},
+		pendingTOTPs:        map[string]pendingTOTP{},
+		lastTOTPSteps:       map[string]int64{},
+		throttles:           map[string]throttle{},
 	}, nil
 }
 
@@ -429,15 +458,13 @@ func (p *identityProvider) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	preAuthID := p.readPreAuthSession(r)
 	if preAuthID == "" || !p.validateCSRFToken(r.PostForm.Get("csrf_token"), "preauth:"+preAuthID) {
+		slog.Warn("form submission rejected", "reason", "invalid or expired CSRF token")
 		http.Error(w, "Invalid or expired session", http.StatusBadRequest)
 		return
 	}
 
-	username := r.PostForm.Get("username")
-	password := r.PostForm.Get("password")
-	authenticatedUser, userKnown := p.authenticateEndUser(username, password)
-	if !userKnown {
-		p.renderLoginForm(w, r, p.base+"/login", nil, username, "Invalid username or password")
+	authenticatedUser, ok := p.authenticateLogin(w, r, p.base+"/login", nil)
+	if !ok {
 		return
 	}
 	p.issueSession(w, authenticatedUser.label, time.Now(), p.readSession(r))
@@ -533,13 +560,13 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 	nonce := params.Get("nonce")
 	state := params.Get("state")
 
-	code, confirm, username, password := "", "", "", ""
+	code, confirm := "", ""
 	csrfToken := ""
+	credentialsSubmitted := false
 	if r.Method == http.MethodPost {
 		code = r.PostForm.Get("code")
 		confirm = r.PostForm.Get("confirm")
-		username = r.PostForm.Get("username")
-		password = r.PostForm.Get("password")
+		credentialsSubmitted = r.PostForm.Get("username") != "" || r.PostForm.Get("password") != "" || r.PostForm.Has("totp")
 		csrfToken = r.PostForm.Get("csrf_token")
 	}
 
@@ -547,6 +574,11 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 	redirectURI, err := url.Parse(params.Get("redirect_uri"))
 
 	if !ok || err != nil || !isAllowedRedirectURL(client.redirectURLs, params.Get("redirect_uri"), client.isPublic) {
+		loggedRedirectURI := ""
+		if err == nil {
+			loggedRedirectURI = (&url.URL{Scheme: redirectURI.Scheme, Host: redirectURI.Host, Path: redirectURI.Path}).String()
+		}
+		slog.Warn("authorization request rejected", "reason", "unknown client or redirect URI", "client_id", logValue(clientID), "redirect_uri", logValue(loggedRedirectURI))
 		http.Error(w, "Unknown client or redirect URI", http.StatusBadRequest)
 		return
 	}
@@ -555,7 +587,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	sessionID := p.readSession(r)
-	if r.Method == http.MethodPost && (confirm != "" || username != "" || password != "") {
+	if r.Method == http.MethodPost && (confirm != "" || credentialsSubmitted) {
 		ownerID := ""
 		if confirm != "" {
 			if sessionID != "" {
@@ -567,6 +599,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		if !p.validateCSRFToken(csrfToken, ownerID) {
+			slog.Warn("form submission rejected", "reason", "invalid or expired CSRF token", "client_id", client.id)
 			http.Error(w, "Invalid or expired session", http.StatusBadRequest)
 			return
 		}
@@ -604,13 +637,16 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		p.mu.Unlock()
 
 		if !codeKnown {
+			slog.Warn("consent rejected", "reason", "invalid or expired consent request", "client_id", client.id)
 			redirectWithError(w, r, p.issuer, *redirectURI, state, "invalid_request", "Invalid consent request")
 			return
 		}
 		if confirm == "no" {
+			slog.Info("consent denied", "label", pendingCode.userLabel, "client_id", client.id)
 			redirectWithError(w, r, p.issuer, *redirectURI, pendingCode.state, "access_denied", "End-user denied the request")
 			return
 		}
+		slog.Info("consent granted", "label", pendingCode.userLabel, "client_id", client.id, "scope", pendingCode.scope)
 		redirectWithCode(w, r, p.issuer, *redirectURI, code, pendingCode.state)
 		return
 	}
@@ -619,7 +655,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		redirectWithError(w, r, p.issuer, *redirectURI, state, errCode, errDesc)
 		return
 	}
-	if !hasUniqueParams(params, authorizeParamNames...) {
+	if !hasUniqueParams(params, authorizeParamNames...) || !hasUniqueParams(r.PostForm, authorizeFormFields...) {
 		redirectWithError(w, r, p.issuer, *redirectURI, state, "invalid_request", "Duplicate parameter")
 		return
 	}
@@ -655,7 +691,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		nonce:           nonce,
 		consentRequired: consentRequired,
 	}
-	if r.Method == http.MethodPost && !resubmitted && !p.hasSessionCookie(r) && username == "" && password == "" {
+	if r.Method == http.MethodPost && !resubmitted && !p.hasSessionCookie(r) && !credentialsSubmitted {
 		p.renderResubmitForm(w, r, p.base+"/authorize", params, authorizeFormFields...)
 		return
 	}
@@ -663,39 +699,44 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 	if !hasPromptValue(prompt, "login") && !hasPromptValue(prompt, "select_account") {
 		currentSession, sessionKnown = p.resumeSession(sessionID)
 		if sessionKnown && !p.canReuseSession(currentSession, hintedUser, maxAge, maxAgeRequested) {
+			slog.Debug("session not reused", "label", currentSession.userLabel, "client_id", client.id, "sid", sessionID)
 			sessionKnown = false
 		}
 	}
 
 	if hasPromptValue(prompt, "none") {
 		if !sessionKnown {
+			slog.Debug("sign-in required without interaction", "client_id", client.id)
 			redirectWithError(w, r, p.issuer, *redirectURI, state, "login_required", "Authentication required")
 			return
 		}
 		if client.isPublic {
+			slog.Debug("interaction required for public client", "client_id", client.id)
 			redirectWithError(w, r, p.issuer, *redirectURI, state, "interaction_required", "Public clients require end-user interaction")
 			return
 		}
+		slog.Debug("reusing session", "label", currentSession.userLabel, "client_id", client.id, "sid", sessionID)
 		p.authorizeUser(w, r, authorization, currentSession.userLabel, currentSession.authenticatedAt, sessionID)
 		return
 	}
 
-	if sessionKnown && (r.Method == http.MethodGet || (username == "" && password == "")) {
+	if sessionKnown && (r.Method == http.MethodGet || !credentialsSubmitted) {
 		authorization.consentRequired = authorization.consentRequired || client.isPublic
+		slog.Debug("reusing session", "label", currentSession.userLabel, "client_id", client.id, "sid", sessionID)
 		p.authorizeUser(w, r, authorization, currentSession.userLabel, currentSession.authenticatedAt, sessionID)
 		return
 	}
 
-	if r.Method == http.MethodGet || (username == "" && password == "") {
+	if r.Method == http.MethodGet || !credentialsSubmitted {
 		p.renderLoginForm(w, r, p.base+"/authorize", authorization.params, "", "")
 		return
 	}
-	authenticatedUser, userKnown := p.authenticateEndUser(username, password)
-	if !userKnown {
-		p.renderLoginForm(w, r, p.base+"/authorize", authorization.params, username, "Invalid username or password")
+	authenticatedUser, ok := p.authenticateLogin(w, r, p.base+"/authorize", authorization.params)
+	if !ok {
 		return
 	}
 	if hintedUser.sub != "" && authenticatedUser.sub != hintedUser.sub {
+		slog.Warn("authenticated user does not match id_token_hint", "label", authenticatedUser.label, "client_id", client.id)
 		redirectWithError(w, r, p.issuer, *redirectURI, state, "login_required", "Authenticated user does not match id_token_hint")
 		return
 	}
@@ -977,12 +1018,14 @@ func (p *identityProvider) handleEndSession(w http.ResponseWriter, r *http.Reque
 	if idTokenHint != "" {
 		hintedUser, ok := p.resolveIDTokenHint(idTokenHint)
 		if !ok {
+			slog.Warn("logout request rejected", "reason", "invalid id_token_hint", "client_id", logValue(clientID))
 			http.Error(w, "Invalid id_token_hint", http.StatusBadRequest)
 			return
 		}
 		if clientID == "" {
 			clientID = hintedUser.aud
 		} else if clientID != hintedUser.aud {
+			slog.Warn("logout request rejected", "reason", "id_token_hint issued to another client", "client_id", logValue(clientID))
 			http.Error(w, "Invalid id_token_hint", http.StatusBadRequest)
 			return
 		}
@@ -990,11 +1033,13 @@ func (p *identityProvider) handleEndSession(w http.ResponseWriter, r *http.Reque
 
 	if postLogoutRedirectURI != "" {
 		if clientID == "" {
+			slog.Warn("logout request rejected", "reason", "missing client_id")
 			http.Error(w, "Missing client_id", http.StatusBadRequest)
 			return
 		}
 		client, ok := p.clients[clientID]
 		if _, matched := resolvePostLogoutRedirectURL(client.postLogoutRedirectURLs, postLogoutRedirectURI); !ok || !matched {
+			slog.Warn("logout request rejected", "reason", "unknown client or post-logout redirect URI", "client_id", logValue(clientID))
 			http.Error(w, "Unknown client or post-logout redirect URI", http.StatusBadRequest)
 			return
 		}
@@ -1013,21 +1058,25 @@ func (p *identityProvider) handleEndSession(w http.ResponseWriter, r *http.Reque
 	}
 
 	if !sessionKnown {
+		slog.Debug("logout requested without a session", "client_id", logValue(clientID))
 		p.renderLogoutComplete(w, r, clientID, postLogoutRedirectURI, state)
 		return
 	}
 
 	if confirm == "" {
+		slog.Debug("logout confirmation required", "client_id", logValue(clientID), "sid", sessionID)
 		p.renderLogoutForm(w, r, params, sessionID)
 		return
 	}
 
 	if !p.validateCSRFToken(csrfToken, "session:"+sessionID) {
+		slog.Warn("form submission rejected", "reason", "invalid or expired CSRF token", "client_id", logValue(clientID))
 		http.Error(w, "Invalid or expired session", http.StatusBadRequest)
 		return
 	}
 
 	if confirm != "yes" {
+		slog.Info("logout canceled", "client_id", logValue(clientID), "sid", sessionID)
 		p.renderLogoutCanceled(w, r, clientID)
 		return
 	}
@@ -1440,6 +1489,26 @@ func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (p *identityProvider) renderTOTPForm(w http.ResponseWriter, r *http.Request, action string, params url.Values, preAuthID, errorMsg string) {
+	p.issuePreAuthSession(w, preAuthID)
+	totpParams := filterFormParams(params, authorizeFormFields...)
+	totpParams.Set("csrf_token", p.issueCSRFToken("preauth:"+preAuthID))
+	p.renderFormPage(w, r, formPage{
+		Title:   p.title,
+		Action:  action,
+		Message: "Enter the code from your authenticator app.",
+		Error:   errorMsg,
+		TestID:  "page-totp",
+		Params:  totpParams,
+		Fields: []formPageField{
+			{Type: "text", Name: "totp", Label: "Authentication code", Autocomplete: "one-time-code", Autofocus: true},
+		},
+		Buttons: []formPageButton{
+			{Label: "Verify"},
+		},
+	})
+}
+
 func (p *identityProvider) renderResubmitForm(w http.ResponseWriter, r *http.Request, action string, params url.Values, skipped ...string) {
 	resubmitParams := filterFormParams(params, skipped...)
 	resubmitParams.Set(resubmitParam, "1")
@@ -1609,6 +1678,7 @@ func (p *identityProvider) authorizeUser(w http.ResponseWriter, r *http.Request,
 	currentSession, sessionKnown := p.sessions[sessionID]
 	if !sessionKnown || p.isSessionExpired(currentSession, time.Now()) {
 		p.mu.Unlock()
+		slog.Debug("session expired before authorization", "client_id", authorization.client.id, "sid", sessionID)
 		redirectWithError(w, r, p.issuer, authorization.redirectURI, authorization.state, "login_required", "Authentication required")
 		return
 	}
@@ -1629,9 +1699,11 @@ func (p *identityProvider) authorizeUser(w http.ResponseWriter, r *http.Request,
 	p.mu.Unlock()
 
 	if authorization.consentRequired {
+		slog.Debug("consent required", "label", userLabel, "client_id", authorization.client.id, "scope", authorization.scope)
 		p.renderConsentForm(w, r, authorization, issuedCode, sessionID)
 		return
 	}
+	slog.Info("authorization code issued", "label", userLabel, "client_id", authorization.client.id, "scope", authorization.scope)
 	redirectWithCode(w, r, p.issuer, authorization.redirectURI, issuedCode, authorization.state)
 }
 
@@ -1974,6 +2046,7 @@ func (p *identityProvider) issueSession(w http.ResponseWriter, userLabel string,
 			p.sessions[sessionID] = currentSession
 			p.mu.Unlock()
 			http.SetCookie(w, cookie)
+			slog.Info("user signed in", "label", userLabel, "sid", sessionID)
 			return sessionID
 		}
 		p.mu.Unlock()
@@ -1992,12 +2065,13 @@ func (p *identityProvider) issueSession(w http.ResponseWriter, userLabel string,
 	p.removeExpiredState()
 	p.mu.Unlock()
 	http.SetCookie(w, cookie)
+	slog.Info("user signed in", "label", userLabel, "sid", sessionID)
 	return sessionID
 }
 
 func (p *identityProvider) clearSession(w http.ResponseWriter, sessionID string) {
 	p.mu.Lock()
-	currentSession := p.sessions[sessionID]
+	currentSession, sessionKnown := p.sessions[sessionID]
 	delete(p.sessions, sessionID)
 	for k, v := range p.pendingCodes {
 		if v.sessionID == sessionID {
@@ -2015,6 +2089,9 @@ func (p *identityProvider) clearSession(w http.ResponseWriter, sessionID string)
 		}
 	}
 	p.mu.Unlock()
+	if sessionKnown {
+		slog.Info("session ended", "label", currentSession.userLabel, "sid", sessionID)
+	}
 	cookie := p.newCookie(sessionCookieBaseName) // #nosec G124
 	cookie.MaxAge = -1
 	http.SetCookie(w, cookie)
@@ -2159,6 +2236,11 @@ func (p *identityProvider) removeExpiredState() {
 			delete(p.pendingCodes, k)
 		}
 	}
+	for k, v := range p.pendingTOTPs {
+		if now.Sub(v.createdAt) > loginActionTTL {
+			delete(p.pendingTOTPs, k)
+		}
+	}
 	for k, v := range p.accessTokens {
 		if now.After(v.expiry) {
 			delete(p.accessTokens, k)
@@ -2215,15 +2297,138 @@ func (p *identityProvider) updateUser(updatedUser user) bool {
 	return true
 }
 
-func (p *identityProvider) authenticateEndUser(username, password string) (user, bool) {
+func (p *identityProvider) authenticateLogin(w http.ResponseWriter, r *http.Request, action string, params url.Values) (user, bool) {
+	preAuthID := p.readPreAuthSession(r)
+	if r.PostForm.Has("totp") {
+		authenticatedUser, errorMsg, pending := p.authenticateTOTP(preAuthID, r.PostForm.Get("totp"))
+		if !pending {
+			p.renderLoginForm(w, r, action, params, "", errorMsg)
+			return user{}, false
+		}
+		if errorMsg != "" {
+			p.renderTOTPForm(w, r, action, params, preAuthID, errorMsg)
+			return user{}, false
+		}
+		return authenticatedUser, true
+	}
+
+	username := r.PostForm.Get("username")
+	authenticatedUser, errorMsg := p.authenticateEndUser(username, r.PostForm.Get("password"))
+	if errorMsg != "" {
+		p.renderLoginForm(w, r, action, params, username, errorMsg)
+		return user{}, false
+	}
+	if authenticatedUser.totpSecret != nil {
+		p.mu.Lock()
+		delete(p.pendingTOTPs, preAuthID)
+		p.removeExpiredState()
+		var pendingIDs []string
+		for id, pending := range p.pendingTOTPs {
+			if pending.userLabel == authenticatedUser.label {
+				pendingIDs = append(pendingIDs, id)
+			}
+		}
+		if len(pendingIDs) >= maxPendingTOTPsPerUser {
+			delete(p.pendingTOTPs, slices.MinFunc(pendingIDs, func(a, b string) int {
+				return p.pendingTOTPs[a].createdAt.Compare(p.pendingTOTPs[b].createdAt)
+			}))
+		}
+		preAuthID = rand.Text()
+		p.pendingTOTPs[preAuthID] = pendingTOTP{userLabel: authenticatedUser.label, createdAt: time.Now()}
+		p.mu.Unlock()
+		slog.Debug("authentication code required", "label", authenticatedUser.label)
+		p.renderTOTPForm(w, r, action, params, preAuthID, "")
+		return user{}, false
+	}
+	return authenticatedUser, true
+}
+
+func (p *identityProvider) authenticateEndUser(username, password string) (user, string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	now := time.Now()
 	for _, candidate := range p.users {
-		if candidate.username == username && subtle.ConstantTimeCompare([]byte(password), []byte(candidate.password)) == 1 {
-			return candidate, true
+		if candidate.username != username {
+			continue
+		}
+		throttleKey := "password:" + candidate.label
+		if wait := p.throttleWait(throttleKey, throttle1FAMaxDelay, now); wait > 0 {
+			p.mu.Unlock()
+			slog.Warn("password attempt throttled", "username", logValue(username), "retry_after", wait.Round(time.Millisecond).String())
+			return user{}, "Invalid username or password"
+		}
+		if subtle.ConstantTimeCompare([]byte(password), []byte(candidate.password)) != 1 {
+			p.recordFailedAttempt(throttleKey, now)
+			failures := p.throttles[throttleKey].failures
+			p.mu.Unlock()
+			slog.Warn("password rejected", "username", logValue(username), "reason", "wrong password", "failures", failures)
+			return user{}, "Invalid username or password"
+		}
+		delete(p.throttles, throttleKey)
+		p.mu.Unlock()
+		slog.Info("password accepted", "label", candidate.label, "username", logValue(username))
+		return candidate, ""
+	}
+	p.mu.Unlock()
+	slog.Warn("password rejected", "username", logValue(username), "reason", "unknown username")
+	return user{}, "Invalid username or password"
+}
+
+func (p *identityProvider) authenticateTOTP(preAuthID, code string) (user, string, bool) {
+	p.mu.Lock()
+	now := time.Now()
+	pending, ok := p.pendingTOTPs[preAuthID]
+	if !ok {
+		p.mu.Unlock()
+		slog.Warn("authentication code rejected", "reason", "no pending authentication step")
+		return user{}, "Sign in again to continue", false
+	}
+	if now.Sub(pending.createdAt) > loginActionTTL {
+		delete(p.pendingTOTPs, preAuthID)
+		p.mu.Unlock()
+		slog.Warn("authentication code rejected", "label", pending.userLabel, "reason", "authentication step expired")
+		return user{}, "Sign in again to continue", false
+	}
+	throttleKey := "totp:" + pending.userLabel
+	if wait := p.throttleWait(throttleKey, throttle2FAMaxDelay, now); wait > 0 {
+		p.mu.Unlock()
+		slog.Warn("authentication code attempt throttled", "label", pending.userLabel, "retry_after", wait.Round(time.Millisecond).String())
+		return user{}, "Too many failed attempts, try again later", true
+	}
+	if !p.validateTOTP(pending.userLabel, code, now) {
+		p.recordFailedAttempt(throttleKey, now)
+		failures := p.throttles[throttleKey].failures
+		p.mu.Unlock()
+		slog.Warn("authentication code rejected", "label", pending.userLabel, "reason", "invalid, expired, or reused code", "failures", failures)
+		return user{}, "Invalid authentication code", true
+	}
+	delete(p.pendingTOTPs, preAuthID)
+	delete(p.throttles, throttleKey)
+	authenticatedUser := p.users[pending.userLabel]
+	p.mu.Unlock()
+	slog.Info("authentication code accepted", "label", pending.userLabel)
+	return authenticatedUser, "", true
+}
+
+func (p *identityProvider) validateTOTP(userLabel, code string, now time.Time) bool {
+	secret := p.users[userLabel].totpSecret
+	current := now.Unix() / totpPeriodSeconds
+	lastStep := p.lastTOTPSteps[userLabel]
+	for step := current - 3; step <= current+1; step++ {
+		mac := hmac.New(sha1.New, secret)
+		_ = binary.Write(mac, binary.BigEndian, step)
+		sum := mac.Sum(nil)
+		offset := sum[len(sum)-1] & 0x0f
+		value := binary.BigEndian.Uint32(sum[offset:]) & 0x7fffffff
+		if hmac.Equal([]byte(code), fmt.Appendf(nil, "%06d", value%1000000)) {
+			if step <= lastStep {
+				return false
+			}
+			if step >= current-1 {
+				p.lastTOTPSteps[userLabel] = step
+			}
 		}
 	}
-	return user{}, false
+	return p.lastTOTPSteps[userLabel] != lastStep
 }
 
 func (p *identityProvider) authenticateClient(w http.ResponseWriter, r *http.Request) (client, bool) {
@@ -2248,6 +2453,7 @@ func (p *identityProvider) authenticateClient(w http.ResponseWriter, r *http.Req
 		return c, true
 	}
 	if subtle.ConstantTimeCompare([]byte(clientSecret), []byte(c.secret)) != 1 {
+		slog.Warn("client secret rejected", "client_id", c.id)
 		if _, _, ok := r.BasicAuth(); ok {
 			w.Header().Set("WWW-Authenticate", `Basic realm="token"`)
 		}
@@ -2267,6 +2473,23 @@ func (p *identityProvider) authenticateProtectedResource(w http.ResponseWriter, 
 		return client{}, false
 	}
 	return c, true
+}
+
+func (p *identityProvider) throttleWait(key string, maxDelay time.Duration, now time.Time) time.Duration {
+	attempts := p.throttles[key]
+	if attempts.failures < throttleFreeFailures {
+		return 0
+	}
+	delay := min(maxDelay, throttleBaseDelay<<min(attempts.failures-throttleFreeFailures, 20))
+	return max(0, attempts.lastFailure.Add(delay).Sub(now))
+}
+
+func (p *identityProvider) recordFailedAttempt(key string, now time.Time) {
+	attempts := p.throttles[key]
+	if now.Sub(attempts.lastFailure) > throttleTTL {
+		attempts.failures = 0
+	}
+	p.throttles[key] = throttle{failures: attempts.failures + 1, lastFailure: now}
 }
 
 func (p *identityProvider) resolveBearerToken(token string) (user, accessToken, bool) {
@@ -2408,7 +2631,9 @@ func (p *identityProvider) sendBackchannelLogout(client client, user user, sessi
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		slog.Error("back-channel logout rejected", "client_id", client.id, "status", resp.Status)
+		return
 	}
+	slog.Debug("back-channel logout delivered", "client_id", client.id, "status", resp.Status)
 }
 
 func (p *identityProvider) buildClaimsForScope(user user, scope string) map[string]any {
@@ -2779,6 +3004,10 @@ func isValidEmail(email string) bool {
 	return err == nil && addr.Name == "" && addr.Address == email && isASCII(email)
 }
 
+func logValue(s string) string {
+	return s[:min(len(s), maxLogValueBytes)]
+}
+
 // -------------------------------------------------------------------------- //
 
 func scanLabels(environ []string, prefix string, suffixes ...string) map[string]struct{} {
@@ -2906,6 +3135,7 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 	labels := scanLabels(environ, prefix,
 		"_USERNAME",
 		"_PASSWORD",
+		"_TOTP_SECRET",
 		"_SUB",
 		"_NAME",
 		"_PREFERRED_USERNAME",
@@ -2920,6 +3150,7 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 
 	users := map[string]user{}
 	usernames := map[string]struct{}{}
+	totpSecrets := map[string]struct{}{}
 	subs := map[string]struct{}{}
 	for label := range labels {
 		username := envOr(lookupEnv, prefix+label+"_USERNAME", "")
@@ -2944,6 +3175,25 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 		}
 		usernames[username] = struct{}{}
 
+		var totpSecret []byte
+		if raw := envOr(lookupEnv, prefix+label+"_TOTP_SECRET", ""); raw != "" {
+			secret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(strings.TrimRight(raw, "=")))
+			if err != nil || len(secret) < 16 {
+				return nil, fmt.Errorf("user %q: TOTP secret must be base32 and encode at least 128 bits", label)
+			}
+			hmacKey := string(secret)
+			if len(secret) > sha1.BlockSize {
+				sum := sha1.Sum(secret) // #nosec G401
+				hmacKey = string(sum[:])
+			}
+			hmacKey = strings.TrimRight(hmacKey, "\x00")
+			if _, dup := totpSecrets[hmacKey]; dup {
+				return nil, fmt.Errorf("duplicate TOTP secret for user %q", label)
+			}
+			totpSecrets[hmacKey] = struct{}{}
+			totpSecret = secret
+		}
+
 		if len(sub) > 255 || !isASCII(sub) {
 			return nil, fmt.Errorf("user %q: sub claim must not exceed 255 ASCII characters", label)
 		}
@@ -2960,6 +3210,7 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 			label:             label,
 			username:          username,
 			password:          password,
+			totpSecret:        totpSecret,
 			sub:               sub,
 			name:              name,
 			preferredUsername: preferredUsername,
@@ -2971,7 +3222,7 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 			groups:            groups,
 			roles:             roles,
 		}
-		slog.LogAttrs(context.Background(), slog.LevelInfo, "registered user", slog.String("label", label), slog.String("username", username), slog.String("sub", sub))
+		slog.LogAttrs(context.Background(), slog.LevelInfo, "registered user", slog.String("label", label), slog.String("username", username), slog.Bool("totp", totpSecret != nil), slog.String("sub", sub))
 	}
 
 	if len(users) == 0 {
