@@ -921,10 +921,10 @@ func testAuthorizationServerObtainsEndUserConsentAuthorization(t *testing.T) {
 		spoofedRequest := request
 		spoofedRequest.Scope = "openid email -- note: this app will NOT read your email address"
 		body := authorizeAndLoginExpectPage(t, provider, spoofedRequest)
-		if want := `data-testid="message">Allow ` + webClientID + ` to access these scopes: openid email?</p>`; !strings.Contains(string(body), want) {
+		if want := `data-testid="message">Allow ` + isolateText(webClientID) + ` to access these scopes: ` + isolateText("openid email") + `?</p>`; !strings.Contains(string(body), want) {
 			t.Fatalf("expected consent message %q, got body=%s", want, body)
 		}
-		if want := "<dd>" + spoofedRequest.RedirectURI + "</dd>"; !strings.Contains(string(body), want) {
+		if want := `<dd><bdi>` + spoofedRequest.RedirectURI + "</bdi></dd>"; !strings.Contains(string(body), want) {
 			t.Fatalf("expected consent redirect URI %q, got body=%s", want, body)
 		}
 
@@ -2346,9 +2346,10 @@ func testMandatoryToImplementFeaturesForAllOpenIDProviders(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
 		}
-		if !strings.Contains(string(body), "Sign in") {
+		if !strings.Contains(string(body), `data-testid="page-login"`) {
 			t.Fatalf("expected login form, got body=%s", body)
 		}
+		expectPageLanguage(t, body, "fr", "ltr")
 	})
 
 	t.Run("supports prompt=none for existing sessions", func(t *testing.T) {

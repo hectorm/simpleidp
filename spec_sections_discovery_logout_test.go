@@ -70,6 +70,10 @@ func testProviderMetadata(t *testing.T) {
 	if !slices.Equal(discovery.PromptValuesSupported, []string{"consent", "login", "none", "select_account"}) {
 		t.Fatalf("unexpected supported prompt values: %#v", discovery.PromptValuesSupported)
 	}
+	slices.Sort(discovery.UILocalesSupported)
+	if !slices.Equal(discovery.UILocalesSupported, []string{"ar", "de", "en", "es", "fr", "it", "ja", "ko", "pt-BR", "pt-PT", "ru", "zh-Hans", "zh-Hant"}) {
+		t.Fatalf("unexpected supported UI locales: %#v", discovery.UILocalesSupported)
+	}
 	if discovery.ClaimsParameterSupported {
 		t.Fatal("claims_parameter_supported should be false")
 	}
@@ -211,9 +215,10 @@ func testRPInitiatedLogout(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("logout POST status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
 		}
-		if !strings.Contains(string(body), "Log out of this identity provider?") {
+		if !strings.Contains(string(body), `data-testid="page-logout"`) {
 			t.Fatalf("expected logout confirmation form, got body=%s", body)
 		}
+		expectPageLanguage(t, body, "fr", "ltr")
 	})
 
 	t.Run("keeps POSTed logout parameters out of the confirmation form URL", func(t *testing.T) {

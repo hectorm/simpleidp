@@ -47,6 +47,7 @@ type providerConfig struct {
 	Favicon        string
 	AccentColor    string
 	ColorScheme    string
+	Language       string
 	AccessTokenTTL time.Duration
 	KeyID          string
 	Clients        []clientConfig
@@ -136,6 +137,7 @@ type discoveryDocument struct {
 	CodeChallengeMethodsSupported              []string `json:"code_challenge_methods_supported"`
 	ClaimsSupported                            []string `json:"claims_supported"`
 	PromptValuesSupported                      []string `json:"prompt_values_supported"`
+	UILocalesSupported                         []string `json:"ui_locales_supported"`
 	ClaimsParameterSupported                   bool     `json:"claims_parameter_supported"`
 	RequestParameterSupported                  bool     `json:"request_parameter_supported"`
 	RequestURIParameterSupported               bool     `json:"request_uri_parameter_supported"`

@@ -146,6 +146,7 @@ var expectedSimpleIdPSections = []string{
 	"3",
 	"4",
 	"5",
+	"6",
 }
 
 type specSection struct {

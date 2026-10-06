@@ -12,6 +12,7 @@
 // SIMPLE_IDP_FAVICON                - favicon URL or data URI (default: blank icon)
 // SIMPLE_IDP_ACCENT_COLOR           - accent color for the pages (default: "oklch(49% 0.19 264)")
 // SIMPLE_IDP_COLOR_SCHEME           - CSS color-scheme value for the pages (default: "light dark")
+// SIMPLE_IDP_LANGUAGE               - language for every page (default: negotiated)
 // SIMPLE_IDP_EDIT_PROFILE           - let users edit their profile, not persisted (default: "false")
 // SIMPLE_IDP_SESSION_IDLE_TTL       - session idle timeout (default: "30m")
 // SIMPLE_IDP_SESSION_MAX_TTL        - session maximum lifetime (default: "10h")
@@ -237,6 +238,8 @@ type identityProvider struct {
 	favicon             template.URL
 	accentColor         template.CSS
 	colorScheme         string
+	languages           []language
+	defaultLanguage     language
 	editProfile         bool
 	sessionIdleTTL      time.Duration
 	sessionMaxTTL       time.Duration
@@ -287,6 +290,15 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 	favicon := template.URL(envOr(lookupEnv, "SIMPLE_IDP_FAVICON", ""))                             // #nosec G203
 	accentColor := template.CSS(envOr(lookupEnv, "SIMPLE_IDP_ACCENT_COLOR", "oklch(49% 0.19 264)")) // #nosec G203
 	colorScheme := envOr(lookupEnv, "SIMPLE_IDP_COLOR_SCHEME", "light dark")
+	pageLanguages := languages
+	defaultLanguage, _ := resolveLanguage(languages, "en")
+	if tag := lookupEnv("SIMPLE_IDP_LANGUAGE"); tag != "" {
+		lang, ok := resolveLanguage(languages, tag)
+		if !ok {
+			return "", nil, fmt.Errorf("SIMPLE_IDP_LANGUAGE: must be one of %s", strings.Join(languageTags(languages), ", "))
+		}
+		pageLanguages, defaultLanguage = []language{lang}, lang
+	}
 	editProfile := lookupEnv("SIMPLE_IDP_EDIT_PROFILE") == "true"
 	sessionIdleTTL, err := envDuration(lookupEnv, "SIMPLE_IDP_SESSION_IDLE_TTL", 30*time.Minute)
 	if err != nil {
@@ -330,6 +342,8 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 		favicon:             favicon,
 		accentColor:         accentColor,
 		colorScheme:         colorScheme,
+		languages:           pageLanguages,
+		defaultLanguage:     defaultLanguage,
 		editProfile:         editProfile,
 		sessionIdleTTL:      sessionIdleTTL,
 		sessionMaxTTL:       sessionMaxTTL,
@@ -406,7 +420,7 @@ func (p *identityProvider) handleProfile(w http.ResponseWriter, r *http.Request)
 	}
 	profileUser, _ := p.lookupUser(currentSession.userLabel)
 	if r.Method != http.MethodPost {
-		p.renderProfilePage(w, r, profileUser, sessionID, "")
+		p.renderProfilePage(w, r, profileUser, sessionID, msgNone)
 		return
 	}
 
@@ -430,16 +444,16 @@ func (p *identityProvider) handleProfile(w http.ResponseWriter, r *http.Request)
 	profileUser.username = r.PostForm.Get("username")
 	profileUser.name = r.PostForm.Get("name")
 	profileUser.email = r.PostForm.Get("email")
-	errorMsg := ""
+	errorMsg := msgNone
 	switch {
 	case profileUser.username == "" || profileUser.name == "":
-		errorMsg = "Username and name are required"
+		errorMsg = msgUsernameAndNameRequired
 	case !isValidEmail(profileUser.email):
-		errorMsg = "Invalid email address"
+		errorMsg = msgInvalidEmail
 	case !p.updateUser(profileUser):
-		errorMsg = "Username already taken"
+		errorMsg = msgUsernameTaken
 	}
-	if errorMsg != "" {
+	if errorMsg != msgNone {
 		p.renderProfilePage(w, r, profileUser, sessionID, errorMsg)
 		return
 	}
@@ -452,7 +466,7 @@ func (p *identityProvider) handleLogin(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, p.base+"/", http.StatusFound)
 			return
 		}
-		p.renderLoginForm(w, r, p.base+"/login", nil, "", "")
+		p.renderLoginForm(w, r, p.base+"/login", nil, "", msgNone)
 		return
 	}
 
@@ -500,6 +514,7 @@ func (p *identityProvider) handleDiscovery(w http.ResponseWriter, r *http.Reques
 		CodeChallengeMethodsSupported              []string `json:"code_challenge_methods_supported"`
 		ClaimsSupported                            []string `json:"claims_supported"`
 		PromptValuesSupported                      []string `json:"prompt_values_supported"`
+		UILocalesSupported                         []string `json:"ui_locales_supported"`
 		ClaimsParameterSupported                   bool     `json:"claims_parameter_supported"`
 		RequestParameterSupported                  bool     `json:"request_parameter_supported"`
 		RequestURIParameterSupported               bool     `json:"request_uri_parameter_supported"`
@@ -529,6 +544,7 @@ func (p *identityProvider) handleDiscovery(w http.ResponseWriter, r *http.Reques
 			"name", "preferred_username", "profile", "picture", "locale", "groups", "roles",
 		},
 		PromptValuesSupported:                      []string{"none", "login", "consent", "select_account"},
+		UILocalesSupported:                         languageTags(p.languages),
 		ClaimsParameterSupported:                   false,
 		RequestParameterSupported:                  false,
 		RequestURIParameterSupported:               false,
@@ -736,7 +752,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 	}
 
 	if r.Method == http.MethodGet || !credentialsSubmitted {
-		p.renderLoginForm(w, r, p.base+"/authorize", authorization.params, "", "")
+		p.renderLoginForm(w, r, p.base+"/authorize", authorization.params, "", msgNone)
 		return
 	}
 	authenticatedUser, ok := p.authenticateLogin(w, r, p.base+"/authorize", authorization.params)
@@ -1067,7 +1083,7 @@ func (p *identityProvider) handleEndSession(w http.ResponseWriter, r *http.Reque
 
 	if !sessionKnown {
 		slog.Debug("logout requested without a session", "client_id", logValue(clientID))
-		p.renderLogoutComplete(w, r, clientID, postLogoutRedirectURI, state)
+		p.renderLogoutComplete(w, r, clientID, postLogoutRedirectURI, state, params.Get("ui_locales"))
 		return
 	}
 
@@ -1085,12 +1101,12 @@ func (p *identityProvider) handleEndSession(w http.ResponseWriter, r *http.Reque
 
 	if confirm != "yes" {
 		slog.Info("logout canceled", "client_id", logValue(clientID), "sid", sessionID)
-		p.renderLogoutCanceled(w, r, clientID)
+		p.renderLogoutCanceled(w, r, clientID, params.Get("ui_locales"))
 		return
 	}
 
 	p.clearSession(w, sessionID)
-	p.renderLogoutComplete(w, r, clientID, postLogoutRedirectURI, state)
+	p.renderLogoutComplete(w, r, clientID, postLogoutRedirectURI, state, params.Get("ui_locales"))
 }
 
 func (p *identityProvider) handleFavicon(w http.ResponseWriter, r *http.Request) {
@@ -1144,6 +1160,8 @@ type formPageLink struct {
 }
 
 type formPage struct {
+	Lang        string
+	Dir         string
 	Title       string
 	Logo        template.URL
 	Favicon     template.URL
@@ -1165,7 +1183,7 @@ type formPage struct {
 
 var formPageGzipPool = sync.Pool{New: func() any { return gzip.NewWriter(nil) }}
 var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE html>
-<html lang="en">
+<html lang="{{.Lang}}" dir="{{.Dir}}">
 <head>
 	<meta charset="utf-8">
 	<meta name="color-scheme" content="{{.ColorScheme}}">
@@ -1341,7 +1359,7 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 </head>
 <body>
 	<main aria-labelledby="page-title"{{if .TestID}} data-testid="{{.TestID}}"{{end}}>
-		<h1 id="page-title" data-testid="page-title">
+		<h1 id="page-title" dir="auto" data-testid="page-title">
 			{{- if .Logo}}<img src="{{.Logo}}" alt="{{.Title}}" data-testid="logo">{{else}}{{.Title}}{{end -}}
 		</h1>
 		{{- if .Message}}
@@ -1355,7 +1373,7 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 			{{- range .Details}}
 			<div>
 				<dt>{{.Label}}</dt>
-				<dd>{{.Value}}</dd>
+				<dd><bdi>{{.Value}}</bdi></dd>
 			</div>
 			{{- end}}
 		</dl>
@@ -1378,6 +1396,7 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 					type="{{.Type}}"
 					id="{{.Name}}"
 					name="{{.Name}}"
+					dir="auto"
 					{{- if .Value}} value="{{.Value}}"{{end}}
 					{{- if .Autocomplete}} autocomplete="{{.Autocomplete}}"{{end}}
 					{{- if .Autofocus}} autofocus{{end}}
@@ -1420,7 +1439,32 @@ var formPageTemplate = template.Must(template.New("form-page").Parse(`<!DOCTYPE 
 </body>
 </html>`))
 
-func (p *identityProvider) renderFormPage(w http.ResponseWriter, r *http.Request, page formPage) {
+func (p *identityProvider) negotiateLanguage(r *http.Request, uiLocales string) language {
+	for tag := range strings.FieldsSeq(uiLocales) {
+		if lang, ok := resolveLanguage(p.languages, tag); ok {
+			return lang
+		}
+	}
+	best, bestWeight := p.defaultLanguage, 0.0
+	for entry := range strings.SplitSeq(strings.Join(r.Header.Values("Accept-Language"), ","), ",") {
+		tag, weightParam, _ := strings.Cut(entry, ";")
+		weight := 1.0
+		if value, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(weightParam)), "q="); ok {
+			var err error
+			if weight, err = strconv.ParseFloat(value, 64); err != nil {
+				continue
+			}
+		}
+		if lang, ok := resolveLanguage(p.languages, strings.TrimSpace(tag)); ok && weight > bestWeight {
+			best, bestWeight = lang, weight
+		}
+	}
+	return best
+}
+
+func (p *identityProvider) renderFormPage(w http.ResponseWriter, r *http.Request, lang language, page formPage) {
+	page.Lang = lang.tag
+	page.Dir = lang.dir
 	page.Logo = p.logo
 	page.Favicon = p.favicon
 	page.AccentColor = p.accentColor
@@ -1441,7 +1485,7 @@ func (p *identityProvider) renderFormPage(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'nonce-"+page.Nonce+"'"+scriptSrc+"; img-src 'self' data: https: http:; frame-ancestors 'none'; base-uri 'none'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("Vary", "Accept-Encoding")
+	w.Header().Set("Vary", "Accept-Encoding, Accept-Language")
 	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 		w.Header().Set("Content-Encoding", "gzip")
 		gz := formPageGzipPool.Get().(*gzip.Writer)
@@ -1454,11 +1498,12 @@ func (p *identityProvider) renderFormPage(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func (p *identityProvider) renderProfilePage(w http.ResponseWriter, r *http.Request, user user, sessionID, errorMsg string) {
+func (p *identityProvider) renderProfilePage(w http.ResponseWriter, r *http.Request, user user, sessionID string, errorMsg message) {
+	lang := p.negotiateLanguage(r, "")
 	csrfToken := p.issueCSRFToken("session:" + sessionID)
 	page := formPage{
 		Title:  p.title,
-		Error:  errorMsg,
+		Error:  lang.messages[errorMsg],
 		TestID: "page-profile",
 		Params: url.Values{
 			"csrf_token": {csrfToken},
@@ -1467,136 +1512,142 @@ func (p *identityProvider) renderProfilePage(w http.ResponseWriter, r *http.Requ
 	if p.editProfile {
 		page.Action = p.base + "/"
 		page.Fields = []formPageField{
-			{Type: "text", Name: "name", Label: "Name", Value: user.name, Autocomplete: "name"},
-			{Type: "text", Name: "username", Label: "Username", Value: user.username, Autocomplete: "username"},
-			{Type: "text", Name: "email", Label: "Email", Value: user.email, Autocomplete: "email"},
+			{Type: "text", Name: "name", Label: lang.messages[msgName], Value: user.name, Autocomplete: "name"},
+			{Type: "text", Name: "username", Label: lang.messages[msgUsername], Value: user.username, Autocomplete: "username"},
+			{Type: "text", Name: "email", Label: lang.messages[msgEmail], Value: user.email, Autocomplete: "email"},
 		}
 		page.Buttons = []formPageButton{
-			{Label: "Save"},
-			{Name: "confirm", Value: "yes", Label: "Log out", Action: p.base + "/end-session"},
+			{Label: lang.messages[msgSave]},
+			{Name: "confirm", Value: "yes", Label: lang.messages[msgLogOut], Action: p.base + "/end-session"},
 		}
 	} else {
 		page.Action = p.base + "/end-session"
 		page.Details = []formPageDetail{
-			{Label: "Name", Value: user.name},
-			{Label: "Username", Value: user.username},
-			{Label: "Email", Value: user.email},
+			{Label: lang.messages[msgName], Value: user.name},
+			{Label: lang.messages[msgUsername], Value: user.username},
+			{Label: lang.messages[msgEmail], Value: user.email},
 		}
 		page.Buttons = []formPageButton{
-			{Name: "confirm", Value: "yes", Label: "Log out"},
+			{Name: "confirm", Value: "yes", Label: lang.messages[msgLogOut]},
 		}
 	}
-	p.renderFormPage(w, r, page)
+	p.renderFormPage(w, r, lang, page)
 }
 
-func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Request, action string, params url.Values, username, errorMsg string) {
+func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Request, action string, params url.Values, username string, errorMsg message) {
+	lang := p.negotiateLanguage(r, params.Get("ui_locales"))
 	preAuthID := p.issuePreAuthSession(w, p.readPreAuthSession(r))
 	loginParams := filterFormParams(params, authorizeFormFields...)
 	loginParams.Set("csrf_token", p.issueCSRFToken("preauth:"+preAuthID))
-	p.renderFormPage(w, r, formPage{
+	p.renderFormPage(w, r, lang, formPage{
 		Title:  p.title,
 		Action: action,
-		Error:  errorMsg,
+		Error:  lang.messages[errorMsg],
 		TestID: "page-login",
 		Params: loginParams,
 		Fields: []formPageField{
-			{Type: "text", Name: "username", Label: "Username", Value: username, Autocomplete: "username", Autofocus: true},
-			{Type: "password", Name: "password", Label: "Password", Autocomplete: "current-password"},
+			{Type: "text", Name: "username", Label: lang.messages[msgUsername], Value: username, Autocomplete: "username", Autofocus: true},
+			{Type: "password", Name: "password", Label: lang.messages[msgPassword], Autocomplete: "current-password"},
 		},
 		Buttons: []formPageButton{
-			{Label: "Sign in"},
+			{Label: lang.messages[msgSignIn]},
 		},
 	})
 }
 
-func (p *identityProvider) renderTOTPForm(w http.ResponseWriter, r *http.Request, action string, params url.Values, preAuthID, errorMsg string) {
+func (p *identityProvider) renderTOTPForm(w http.ResponseWriter, r *http.Request, action string, params url.Values, preAuthID string, errorMsg message) {
+	lang := p.negotiateLanguage(r, params.Get("ui_locales"))
 	p.issuePreAuthSession(w, preAuthID)
 	totpParams := filterFormParams(params, authorizeFormFields...)
 	totpParams.Set("csrf_token", p.issueCSRFToken("preauth:"+preAuthID))
-	p.renderFormPage(w, r, formPage{
+	p.renderFormPage(w, r, lang, formPage{
 		Title:   p.title,
 		Action:  action,
-		Message: "Enter the code from your authenticator app.",
-		Error:   errorMsg,
+		Message: lang.messages[msgEnterAuthenticationCode],
+		Error:   lang.messages[errorMsg],
 		TestID:  "page-totp",
 		Params:  totpParams,
 		Fields: []formPageField{
-			{Type: "text", Name: "totp", Label: "Authentication code", Autocomplete: "one-time-code", Autofocus: true},
+			{Type: "text", Name: "totp", Label: lang.messages[msgAuthenticationCode], Autocomplete: "one-time-code", Autofocus: true},
 		},
 		Buttons: []formPageButton{
-			{Label: "Verify"},
+			{Label: lang.messages[msgVerify]},
 		},
 	})
 }
 
 func (p *identityProvider) renderResubmitForm(w http.ResponseWriter, r *http.Request, action string, params url.Values, skipped ...string) {
+	lang := p.negotiateLanguage(r, params.Get("ui_locales"))
 	resubmitParams := filterFormParams(params, skipped...)
 	resubmitParams.Set(resubmitParam, "1")
-	p.renderFormPage(w, r, formPage{
+	p.renderFormPage(w, r, lang, formPage{
 		Title:      p.title,
 		Action:     action,
 		TestID:     "page-resubmit",
 		Params:     resubmitParams,
-		Buttons:    []formPageButton{{Label: "Continue"}},
+		Buttons:    []formPageButton{{Label: lang.messages[msgContinue]}},
 		AutoSubmit: true,
 	})
 }
 
 func (p *identityProvider) renderConsentForm(w http.ResponseWriter, r *http.Request, authorization authorizeRequest, code, sessionID string) {
+	lang := p.negotiateLanguage(r, authorization.params.Get("ui_locales"))
 	consentParams := filterFormParams(authorization.params, authorizeFormFields...)
 	consentParams.Set("code", code)
 	consentParams.Set("csrf_token", p.issueCSRFToken("session:"+sessionID))
-	p.renderFormPage(w, r, formPage{
+	p.renderFormPage(w, r, lang, formPage{
 		Title:   p.title,
 		Action:  p.base + "/authorize",
-		Message: fmt.Sprintf("Allow %s to access these scopes: %s?", authorization.client.id, authorization.scope),
+		Message: fmt.Sprintf(lang.messages[msgConsentRequest], isolateText(authorization.client.id), isolateText(authorization.scope)),
 		TestID:  "page-consent",
 		Params:  consentParams,
 		Details: []formPageDetail{
-			{Label: "Redirect URI", Value: authorization.redirectURI.String()},
+			{Label: lang.messages[msgRedirectURI], Value: authorization.redirectURI.String()},
 		},
 		Buttons: []formPageButton{
-			{Name: "confirm", Value: "yes", Label: "Allow"},
-			{Name: "confirm", Value: "no", Label: "Deny"},
+			{Name: "confirm", Value: "yes", Label: lang.messages[msgAllow]},
+			{Name: "confirm", Value: "no", Label: lang.messages[msgDeny]},
 		},
 	})
 }
 
 func (p *identityProvider) renderLogoutForm(w http.ResponseWriter, r *http.Request, params url.Values, sessionID string) {
+	lang := p.negotiateLanguage(r, params.Get("ui_locales"))
 	logoutParams := filterFormParams(params, endSessionFormFields...)
 	logoutParams.Set("csrf_token", p.issueCSRFToken("session:"+sessionID))
-	p.renderFormPage(w, r, formPage{
+	p.renderFormPage(w, r, lang, formPage{
 		Title:   p.title,
 		Action:  p.base + "/end-session",
-		Message: "Log out of this identity provider?",
+		Message: lang.messages[msgLogoutRequest],
 		TestID:  "page-logout",
 		Params:  logoutParams,
 		Buttons: []formPageButton{
-			{Name: "confirm", Value: "yes", Label: "Log out"},
-			{Name: "confirm", Value: "no", Label: "Cancel"},
+			{Name: "confirm", Value: "yes", Label: lang.messages[msgLogOut]},
+			{Name: "confirm", Value: "no", Label: lang.messages[msgCancel]},
 		},
 	})
 }
 
-func (p *identityProvider) renderLogoutCanceled(w http.ResponseWriter, r *http.Request, clientID string) {
+func (p *identityProvider) renderLogoutCanceled(w http.ResponseWriter, r *http.Request, clientID, uiLocales string) {
+	lang := p.negotiateLanguage(r, uiLocales)
 	var links []formPageLink
 	if clientID != "" {
 		if client, ok := p.clients[clientID]; ok {
 			if len(client.postLogoutRedirectURLs) > 0 {
 				returnURL := client.postLogoutRedirectURLs[0]
-				links = append(links, formPageLink{Href: returnURL, Label: "Return to application", TestID: "return-link"})
+				links = append(links, formPageLink{Href: returnURL, Label: lang.messages[msgReturnToApplication], TestID: "return-link"})
 			}
 		}
 	}
-	p.renderFormPage(w, r, formPage{
+	p.renderFormPage(w, r, lang, formPage{
 		Title:   p.title,
-		Message: "Logout canceled. You are still signed in.",
+		Message: lang.messages[msgLogoutCanceled],
 		TestID:  "page-logout-canceled",
 		Links:   links,
 	})
 }
 
-func (p *identityProvider) renderLogoutComplete(w http.ResponseWriter, r *http.Request, clientID, postLogoutRedirectURI, state string) {
+func (p *identityProvider) renderLogoutComplete(w http.ResponseWriter, r *http.Request, clientID, postLogoutRedirectURI, state, uiLocales string) {
 	if postLogoutRedirectURI != "" {
 		postLogoutRedirectURL, _ := resolvePostLogoutRedirectURL(p.clients[clientID].postLogoutRedirectURLs, postLogoutRedirectURI)
 		if state != "" {
@@ -1611,18 +1662,19 @@ func (p *identityProvider) renderLogoutComplete(w http.ResponseWriter, r *http.R
 		http.Redirect(w, r, postLogoutRedirectURL.String(), status)
 		return
 	}
+	lang := p.negotiateLanguage(r, uiLocales)
 	var links []formPageLink
 	if clientID != "" {
 		if client, ok := p.clients[clientID]; ok {
 			if len(client.postLogoutRedirectURLs) > 0 {
 				returnURL := client.postLogoutRedirectURLs[0]
-				links = append(links, formPageLink{Href: returnURL, Label: "Return to application", TestID: "return-link"})
+				links = append(links, formPageLink{Href: returnURL, Label: lang.messages[msgReturnToApplication], TestID: "return-link"})
 			}
 		}
 	}
-	p.renderFormPage(w, r, formPage{
+	p.renderFormPage(w, r, lang, formPage{
 		Title:   p.title,
-		Message: "You have been signed out.",
+		Message: lang.messages[msgLogoutComplete],
 		TestID:  "page-logout-complete",
 		Links:   links,
 	})
@@ -2325,7 +2377,7 @@ func (p *identityProvider) authenticateLogin(w http.ResponseWriter, r *http.Requ
 			p.renderLoginForm(w, r, action, params, "", errorMsg)
 			return user{}, false
 		}
-		if errorMsg != "" {
+		if errorMsg != msgNone {
 			p.renderTOTPForm(w, r, action, params, preAuthID, errorMsg)
 			return user{}, false
 		}
@@ -2334,7 +2386,7 @@ func (p *identityProvider) authenticateLogin(w http.ResponseWriter, r *http.Requ
 
 	username := r.PostForm.Get("username")
 	authenticatedUser, errorMsg := p.authenticateEndUser(username, r.PostForm.Get("password"))
-	if errorMsg != "" {
+	if errorMsg != msgNone {
 		p.renderLoginForm(w, r, action, params, username, errorMsg)
 		return user{}, false
 	}
@@ -2357,13 +2409,13 @@ func (p *identityProvider) authenticateLogin(w http.ResponseWriter, r *http.Requ
 		p.pendingTOTPs[preAuthID] = pendingTOTP{userLabel: authenticatedUser.label, createdAt: time.Now()}
 		p.mu.Unlock()
 		slog.Debug("authentication code required", "label", authenticatedUser.label)
-		p.renderTOTPForm(w, r, action, params, preAuthID, "")
+		p.renderTOTPForm(w, r, action, params, preAuthID, msgNone)
 		return user{}, false
 	}
 	return authenticatedUser, true
 }
 
-func (p *identityProvider) authenticateEndUser(username, password string) (user, string) {
+func (p *identityProvider) authenticateEndUser(username, password string) (user, message) {
 	p.mu.Lock()
 	now := time.Now()
 	for _, candidate := range p.users {
@@ -2374,59 +2426,59 @@ func (p *identityProvider) authenticateEndUser(username, password string) (user,
 		if wait := p.throttleWait(throttleKey, throttle1FAMaxDelay, now); wait > 0 {
 			p.mu.Unlock()
 			slog.Warn("password attempt throttled", "username", logValue(username), "retry_after", wait.Round(time.Millisecond).String())
-			return user{}, "Invalid username or password"
+			return user{}, msgInvalidCredentials
 		}
 		if subtle.ConstantTimeCompare([]byte(password), []byte(candidate.password)) != 1 {
 			p.recordFailedAttempt(throttleKey, now)
 			failures := p.throttles[throttleKey].failures
 			p.mu.Unlock()
 			slog.Warn("password rejected", "username", logValue(username), "reason", "wrong password", "failures", failures)
-			return user{}, "Invalid username or password"
+			return user{}, msgInvalidCredentials
 		}
 		delete(p.throttles, throttleKey)
 		p.mu.Unlock()
 		slog.Info("password accepted", "label", candidate.label, "username", logValue(username))
-		return candidate, ""
+		return candidate, msgNone
 	}
 	p.mu.Unlock()
 	slog.Warn("password rejected", "username", logValue(username), "reason", "unknown username")
-	return user{}, "Invalid username or password"
+	return user{}, msgInvalidCredentials
 }
 
-func (p *identityProvider) authenticateTOTP(preAuthID, code string) (user, string, bool) {
+func (p *identityProvider) authenticateTOTP(preAuthID, code string) (user, message, bool) {
 	p.mu.Lock()
 	now := time.Now()
 	pending, ok := p.pendingTOTPs[preAuthID]
 	if !ok {
 		p.mu.Unlock()
 		slog.Warn("authentication code rejected", "reason", "no pending authentication step")
-		return user{}, "Sign in again to continue", false
+		return user{}, msgSignInAgain, false
 	}
 	if now.Sub(pending.createdAt) > loginActionTTL {
 		delete(p.pendingTOTPs, preAuthID)
 		p.mu.Unlock()
 		slog.Warn("authentication code rejected", "label", pending.userLabel, "reason", "authentication step expired")
-		return user{}, "Sign in again to continue", false
+		return user{}, msgSignInAgain, false
 	}
 	throttleKey := "totp:" + pending.userLabel
 	if wait := p.throttleWait(throttleKey, throttle2FAMaxDelay, now); wait > 0 {
 		p.mu.Unlock()
 		slog.Warn("authentication code attempt throttled", "label", pending.userLabel, "retry_after", wait.Round(time.Millisecond).String())
-		return user{}, "Too many failed attempts, try again later", true
+		return user{}, msgTooManyAttempts, true
 	}
 	if !p.validateTOTP(pending.userLabel, code, now) {
 		p.recordFailedAttempt(throttleKey, now)
 		failures := p.throttles[throttleKey].failures
 		p.mu.Unlock()
 		slog.Warn("authentication code rejected", "label", pending.userLabel, "reason", "invalid, expired, or reused code", "failures", failures)
-		return user{}, "Invalid authentication code", true
+		return user{}, msgInvalidAuthenticationCode, true
 	}
 	delete(p.pendingTOTPs, preAuthID)
 	delete(p.throttles, throttleKey)
 	authenticatedUser := p.users[pending.userLabel]
 	p.mu.Unlock()
 	slog.Info("authentication code accepted", "label", pending.userLabel)
-	return authenticatedUser, "", true
+	return authenticatedUser, msgNone, true
 }
 
 func (p *identityProvider) validateTOTP(userLabel, code string, now time.Time) bool {
@@ -3331,4 +3383,478 @@ func envDuration(lookupEnv func(string) string, name string, fallback time.Durat
 		return 0, fmt.Errorf("%s: must be a positive duration", name)
 	}
 	return d, nil
+}
+
+// -------------------------------------------------------------------------- //
+
+type message int
+
+const (
+	msgNone message = iota
+	msgName
+	msgUsername
+	msgEmail
+	msgPassword
+	msgAuthenticationCode
+	msgRedirectURI
+	msgSave
+	msgSignIn
+	msgVerify
+	msgContinue
+	msgAllow
+	msgDeny
+	msgLogOut
+	msgCancel
+	msgReturnToApplication
+	msgEnterAuthenticationCode
+	msgConsentRequest
+	msgLogoutRequest
+	msgLogoutCanceled
+	msgLogoutComplete
+	msgUsernameAndNameRequired
+	msgInvalidEmail
+	msgUsernameTaken
+	msgInvalidCredentials
+	msgSignInAgain
+	msgTooManyAttempts
+	msgInvalidAuthenticationCode
+)
+
+const (
+	firstStrongIsolate    = "\u2068"
+	popDirectionalIsolate = "\u2069"
+)
+
+type language struct {
+	tag      string
+	dir      string
+	messages map[message]string
+}
+
+var languages = []language{
+	{tag: "ar", dir: "rtl", messages: map[message]string{
+		msgName:                      "الاسم",
+		msgUsername:                  "اسم المستخدم",
+		msgEmail:                     "البريد الإلكتروني",
+		msgPassword:                  "كلمة المرور",
+		msgAuthenticationCode:        "رمز المصادقة",
+		msgRedirectURI:               "عنوان URI لإعادة التوجيه",
+		msgSave:                      "حفظ",
+		msgSignIn:                    "تسجيل الدخول",
+		msgVerify:                    "تحقق",
+		msgContinue:                  "متابعة",
+		msgAllow:                     "السماح",
+		msgDeny:                      "رفض",
+		msgLogOut:                    "تسجيل الخروج",
+		msgCancel:                    "إلغاء",
+		msgReturnToApplication:       "العودة إلى التطبيق",
+		msgEnterAuthenticationCode:   "أدخل الرمز من تطبيق المصادقة.",
+		msgConsentRequest:            "هل تريد السماح للتطبيق %s بالوصول إلى هذه النطاقات: %s؟",
+		msgLogoutRequest:             "هل تريد تسجيل الخروج من موفر الهوية هذا؟",
+		msgLogoutCanceled:            "تم إلغاء تسجيل الخروج. لا تزال جلستك نشطة.",
+		msgLogoutComplete:            "تم تسجيل خروجك.",
+		msgUsernameAndNameRequired:   "اسم المستخدم والاسم مطلوبان",
+		msgInvalidEmail:              "عنوان البريد الإلكتروني غير صالح",
+		msgUsernameTaken:             "اسم المستخدم مستخدم بالفعل",
+		msgInvalidCredentials:        "اسم المستخدم أو كلمة المرور غير صحيحة",
+		msgSignInAgain:               "سجّل الدخول مرة أخرى للمتابعة",
+		msgTooManyAttempts:           "محاولات فاشلة كثيرة جدًا، حاول مرة أخرى لاحقًا",
+		msgInvalidAuthenticationCode: "رمز المصادقة غير صالح",
+	}},
+	{tag: "de", dir: "ltr", messages: map[message]string{
+		msgName:                      "Name",
+		msgUsername:                  "Benutzername",
+		msgEmail:                     "E-Mail",
+		msgPassword:                  "Passwort",
+		msgAuthenticationCode:        "Authentifizierungscode",
+		msgRedirectURI:               "Weiterleitungs-URI",
+		msgSave:                      "Speichern",
+		msgSignIn:                    "Anmelden",
+		msgVerify:                    "Überprüfen",
+		msgContinue:                  "Weiter",
+		msgAllow:                     "Zulassen",
+		msgDeny:                      "Ablehnen",
+		msgLogOut:                    "Abmelden",
+		msgCancel:                    "Abbrechen",
+		msgReturnToApplication:       "Zurück zur Anwendung",
+		msgEnterAuthenticationCode:   "Geben Sie den Code aus Ihrer Authentifizierungs-App ein.",
+		msgConsentRequest:            "%s den Zugriff auf diese Bereiche erlauben: %s?",
+		msgLogoutRequest:             "Von diesem Identitätsanbieter abmelden?",
+		msgLogoutCanceled:            "Abmeldung abgebrochen. Sie sind weiterhin angemeldet.",
+		msgLogoutComplete:            "Sie wurden abgemeldet.",
+		msgUsernameAndNameRequired:   "Benutzername und Name sind erforderlich",
+		msgInvalidEmail:              "Ungültige E-Mail-Adresse",
+		msgUsernameTaken:             "Benutzername bereits vergeben",
+		msgInvalidCredentials:        "Benutzername oder Passwort ungültig",
+		msgSignInAgain:               "Melden Sie sich erneut an, um fortzufahren",
+		msgTooManyAttempts:           "Zu viele Fehlversuche, versuchen Sie es später erneut",
+		msgInvalidAuthenticationCode: "Ungültiger Authentifizierungscode",
+	}},
+	{tag: "en", dir: "ltr", messages: map[message]string{
+		msgName:                      "Name",
+		msgUsername:                  "Username",
+		msgEmail:                     "Email",
+		msgPassword:                  "Password",
+		msgAuthenticationCode:        "Authentication code",
+		msgRedirectURI:               "Redirect URI",
+		msgSave:                      "Save",
+		msgSignIn:                    "Sign in",
+		msgVerify:                    "Verify",
+		msgContinue:                  "Continue",
+		msgAllow:                     "Allow",
+		msgDeny:                      "Deny",
+		msgLogOut:                    "Log out",
+		msgCancel:                    "Cancel",
+		msgReturnToApplication:       "Return to application",
+		msgEnterAuthenticationCode:   "Enter the code from your authenticator app.",
+		msgConsentRequest:            "Allow %s to access these scopes: %s?",
+		msgLogoutRequest:             "Log out of this identity provider?",
+		msgLogoutCanceled:            "Logout canceled. You are still signed in.",
+		msgLogoutComplete:            "You have been signed out.",
+		msgUsernameAndNameRequired:   "Username and name are required",
+		msgInvalidEmail:              "Invalid email address",
+		msgUsernameTaken:             "Username already taken",
+		msgInvalidCredentials:        "Invalid username or password",
+		msgSignInAgain:               "Sign in again to continue",
+		msgTooManyAttempts:           "Too many failed attempts, try again later",
+		msgInvalidAuthenticationCode: "Invalid authentication code",
+	}},
+	{tag: "es", dir: "ltr", messages: map[message]string{
+		msgName:                      "Nombre",
+		msgUsername:                  "Nombre de usuario",
+		msgEmail:                     "Correo electrónico",
+		msgPassword:                  "Contraseña",
+		msgAuthenticationCode:        "Código de autenticación",
+		msgRedirectURI:               "URI de redirección",
+		msgSave:                      "Guardar",
+		msgSignIn:                    "Iniciar sesión",
+		msgVerify:                    "Verificar",
+		msgContinue:                  "Continuar",
+		msgAllow:                     "Permitir",
+		msgDeny:                      "Denegar",
+		msgLogOut:                    "Cerrar sesión",
+		msgCancel:                    "Cancelar",
+		msgReturnToApplication:       "Volver a la aplicación",
+		msgEnterAuthenticationCode:   "Introduce el código de tu aplicación de autenticación.",
+		msgConsentRequest:            "¿Permitir que %s acceda a estos ámbitos: %s?",
+		msgLogoutRequest:             "¿Cerrar sesión en este proveedor de identidad?",
+		msgLogoutCanceled:            "Cierre de sesión cancelado. Tu sesión sigue iniciada.",
+		msgLogoutComplete:            "Se ha cerrado la sesión.",
+		msgUsernameAndNameRequired:   "El nombre de usuario y el nombre son obligatorios",
+		msgInvalidEmail:              "Correo electrónico no válido",
+		msgUsernameTaken:             "El nombre de usuario ya está en uso",
+		msgInvalidCredentials:        "Nombre de usuario o contraseña incorrectos",
+		msgSignInAgain:               "Inicia sesión de nuevo para continuar",
+		msgTooManyAttempts:           "Demasiados intentos fallidos, inténtalo de nuevo más tarde",
+		msgInvalidAuthenticationCode: "Código de autenticación no válido",
+	}},
+	{tag: "fr", dir: "ltr", messages: map[message]string{
+		msgName:                      "Nom",
+		msgUsername:                  "Nom d’utilisateur",
+		msgEmail:                     "E-mail",
+		msgPassword:                  "Mot de passe",
+		msgAuthenticationCode:        "Code d’authentification",
+		msgRedirectURI:               "URI de redirection",
+		msgSave:                      "Enregistrer",
+		msgSignIn:                    "Se connecter",
+		msgVerify:                    "Vérifier",
+		msgContinue:                  "Continuer",
+		msgAllow:                     "Autoriser",
+		msgDeny:                      "Refuser",
+		msgLogOut:                    "Se déconnecter",
+		msgCancel:                    "Annuler",
+		msgReturnToApplication:       "Retour à l’application",
+		msgEnterAuthenticationCode:   "Saisissez le code de votre application d’authentification.",
+		msgConsentRequest:            "Autoriser %s à accéder à ces étendues\u00a0: %s\u00a0?",
+		msgLogoutRequest:             "Se déconnecter de ce fournisseur d’identité\u00a0?",
+		msgLogoutCanceled:            "Déconnexion annulée. Votre session est toujours active.",
+		msgLogoutComplete:            "Déconnexion effectuée.",
+		msgUsernameAndNameRequired:   "Le nom d’utilisateur et le nom sont obligatoires",
+		msgInvalidEmail:              "Adresse e-mail non valide",
+		msgUsernameTaken:             "Ce nom d’utilisateur est déjà utilisé",
+		msgInvalidCredentials:        "Nom d’utilisateur ou mot de passe incorrect",
+		msgSignInAgain:               "Reconnectez-vous pour continuer",
+		msgTooManyAttempts:           "Trop de tentatives infructueuses, réessayez plus tard",
+		msgInvalidAuthenticationCode: "Code d’authentification non valide",
+	}},
+	{tag: "it", dir: "ltr", messages: map[message]string{
+		msgName:                      "Nome",
+		msgUsername:                  "Nome utente",
+		msgEmail:                     "Email",
+		msgPassword:                  "Password",
+		msgAuthenticationCode:        "Codice di autenticazione",
+		msgRedirectURI:               "URI di reindirizzamento",
+		msgSave:                      "Salva",
+		msgSignIn:                    "Accedi",
+		msgVerify:                    "Verifica",
+		msgContinue:                  "Continua",
+		msgAllow:                     "Consenti",
+		msgDeny:                      "Nega",
+		msgLogOut:                    "Esci",
+		msgCancel:                    "Annulla",
+		msgReturnToApplication:       "Torna all’applicazione",
+		msgEnterAuthenticationCode:   "Inserisci il codice della tua app di autenticazione.",
+		msgConsentRequest:            "Consentire a %s di accedere a questi ambiti: %s?",
+		msgLogoutRequest:             "Uscire da questo provider di identità?",
+		msgLogoutCanceled:            "Disconnessione annullata. La tua sessione è ancora attiva.",
+		msgLogoutComplete:            "Disconnessione effettuata.",
+		msgUsernameAndNameRequired:   "Nome utente e nome sono obbligatori",
+		msgInvalidEmail:              "Indirizzo email non valido",
+		msgUsernameTaken:             "Nome utente già in uso",
+		msgInvalidCredentials:        "Nome utente o password non validi",
+		msgSignInAgain:               "Accedi di nuovo per continuare",
+		msgTooManyAttempts:           "Troppi tentativi non riusciti, riprova più tardi",
+		msgInvalidAuthenticationCode: "Codice di autenticazione non valido",
+	}},
+	{tag: "ja", dir: "ltr", messages: map[message]string{
+		msgName:                      "名前",
+		msgUsername:                  "ユーザー名",
+		msgEmail:                     "メールアドレス",
+		msgPassword:                  "パスワード",
+		msgAuthenticationCode:        "認証コード",
+		msgRedirectURI:               "リダイレクト URI",
+		msgSave:                      "保存",
+		msgSignIn:                    "ログイン",
+		msgVerify:                    "確認",
+		msgContinue:                  "続行",
+		msgAllow:                     "許可",
+		msgDeny:                      "拒否",
+		msgLogOut:                    "ログアウト",
+		msgCancel:                    "キャンセル",
+		msgReturnToApplication:       "アプリケーションに戻る",
+		msgEnterAuthenticationCode:   "認証アプリに表示されているコードを入力してください。",
+		msgConsentRequest:            "%s にスコープ %s へのアクセスを許可しますか？",
+		msgLogoutRequest:             "この ID プロバイダーからログアウトしますか？",
+		msgLogoutCanceled:            "ログアウトをキャンセルしました。引き続きログインしています。",
+		msgLogoutComplete:            "ログアウトしました。",
+		msgUsernameAndNameRequired:   "ユーザー名と名前は必須です",
+		msgInvalidEmail:              "メールアドレスが無効です",
+		msgUsernameTaken:             "このユーザー名は既に使用されています",
+		msgInvalidCredentials:        "ユーザー名またはパスワードが正しくありません",
+		msgSignInAgain:               "続行するには再度ログインしてください",
+		msgTooManyAttempts:           "失敗回数が多すぎるため、しばらくしてからもう一度お試しください",
+		msgInvalidAuthenticationCode: "認証コードが無効です",
+	}},
+	{tag: "ko", dir: "ltr", messages: map[message]string{
+		msgName:                      "이름",
+		msgUsername:                  "사용자 이름",
+		msgEmail:                     "이메일",
+		msgPassword:                  "비밀번호",
+		msgAuthenticationCode:        "인증 코드",
+		msgRedirectURI:               "리디렉션 URI",
+		msgSave:                      "저장",
+		msgSignIn:                    "로그인",
+		msgVerify:                    "확인",
+		msgContinue:                  "계속",
+		msgAllow:                     "허용",
+		msgDeny:                      "거부",
+		msgLogOut:                    "로그아웃",
+		msgCancel:                    "취소",
+		msgReturnToApplication:       "애플리케이션으로 돌아가기",
+		msgEnterAuthenticationCode:   "인증 앱에 표시된 코드를 입력하세요.",
+		msgConsentRequest:            "%s에 %s 범위에 대한 접근을 허용하시겠습니까?",
+		msgLogoutRequest:             "이 ID 공급자에서 로그아웃하시겠습니까?",
+		msgLogoutCanceled:            "로그아웃이 취소되었습니다. 계속 로그인된 상태입니다.",
+		msgLogoutComplete:            "로그아웃되었습니다.",
+		msgUsernameAndNameRequired:   "사용자 이름과 이름은 필수 항목입니다",
+		msgInvalidEmail:              "유효하지 않은 이메일 주소입니다",
+		msgUsernameTaken:             "이미 사용 중인 사용자 이름입니다",
+		msgInvalidCredentials:        "사용자 이름 또는 비밀번호가 올바르지 않습니다",
+		msgSignInAgain:               "계속하려면 다시 로그인하세요",
+		msgTooManyAttempts:           "실패한 시도가 너무 많습니다. 잠시 후 다시 시도하세요",
+		msgInvalidAuthenticationCode: "유효하지 않은 인증 코드입니다",
+	}},
+	{tag: "pt-BR", dir: "ltr", messages: map[message]string{
+		msgName:                      "Nome",
+		msgUsername:                  "Nome de usuário",
+		msgEmail:                     "E-mail",
+		msgPassword:                  "Senha",
+		msgAuthenticationCode:        "Código de autenticação",
+		msgRedirectURI:               "URI de redirecionamento",
+		msgSave:                      "Salvar",
+		msgSignIn:                    "Entrar",
+		msgVerify:                    "Verificar",
+		msgContinue:                  "Continuar",
+		msgAllow:                     "Permitir",
+		msgDeny:                      "Negar",
+		msgLogOut:                    "Sair",
+		msgCancel:                    "Cancelar",
+		msgReturnToApplication:       "Voltar para o aplicativo",
+		msgEnterAuthenticationCode:   "Digite o código do seu aplicativo autenticador.",
+		msgConsentRequest:            "Permitir que %s acesse estes escopos: %s?",
+		msgLogoutRequest:             "Sair deste provedor de identidade?",
+		msgLogoutCanceled:            "Encerramento de sessão cancelado. Sua sessão continua ativa.",
+		msgLogoutComplete:            "Sua sessão foi encerrada.",
+		msgUsernameAndNameRequired:   "O nome de usuário e o nome são obrigatórios",
+		msgInvalidEmail:              "Endereço de e-mail inválido",
+		msgUsernameTaken:             "O nome de usuário já está em uso",
+		msgInvalidCredentials:        "Nome de usuário ou senha incorretos",
+		msgSignInAgain:               "Entre novamente para continuar",
+		msgTooManyAttempts:           "Muitas tentativas malsucedidas, tente novamente mais tarde",
+		msgInvalidAuthenticationCode: "Código de autenticação inválido",
+	}},
+	{tag: "pt-PT", dir: "ltr", messages: map[message]string{
+		msgName:                      "Nome",
+		msgUsername:                  "Nome de utilizador",
+		msgEmail:                     "E-mail",
+		msgPassword:                  "Palavra-passe",
+		msgAuthenticationCode:        "Código de autenticação",
+		msgRedirectURI:               "URI de redirecionamento",
+		msgSave:                      "Guardar",
+		msgSignIn:                    "Iniciar sessão",
+		msgVerify:                    "Verificar",
+		msgContinue:                  "Continuar",
+		msgAllow:                     "Permitir",
+		msgDeny:                      "Recusar",
+		msgLogOut:                    "Terminar sessão",
+		msgCancel:                    "Cancelar",
+		msgReturnToApplication:       "Voltar à aplicação",
+		msgEnterAuthenticationCode:   "Introduza o código da sua aplicação de autenticação.",
+		msgConsentRequest:            "Permitir que %s aceda a estes âmbitos: %s?",
+		msgLogoutRequest:             "Terminar sessão neste fornecedor de identidade?",
+		msgLogoutCanceled:            "Fim de sessão cancelado. A sua sessão continua ativa.",
+		msgLogoutComplete:            "A sua sessão foi terminada.",
+		msgUsernameAndNameRequired:   "O nome de utilizador e o nome são obrigatórios",
+		msgInvalidEmail:              "Endereço de e-mail inválido",
+		msgUsernameTaken:             "O nome de utilizador já está em uso",
+		msgInvalidCredentials:        "Nome de utilizador ou palavra-passe incorretos",
+		msgSignInAgain:               "Inicie sessão novamente para continuar",
+		msgTooManyAttempts:           "Demasiadas tentativas falhadas, tente novamente mais tarde",
+		msgInvalidAuthenticationCode: "Código de autenticação inválido",
+	}},
+	{tag: "ru", dir: "ltr", messages: map[message]string{
+		msgName:                      "Имя",
+		msgUsername:                  "Имя пользователя",
+		msgEmail:                     "Электронная почта",
+		msgPassword:                  "Пароль",
+		msgAuthenticationCode:        "Код аутентификации",
+		msgRedirectURI:               "URI перенаправления",
+		msgSave:                      "Сохранить",
+		msgSignIn:                    "Войти",
+		msgVerify:                    "Подтвердить",
+		msgContinue:                  "Продолжить",
+		msgAllow:                     "Разрешить",
+		msgDeny:                      "Отклонить",
+		msgLogOut:                    "Выйти",
+		msgCancel:                    "Отмена",
+		msgReturnToApplication:       "Вернуться в приложение",
+		msgEnterAuthenticationCode:   "Введите код из приложения-аутентификатора.",
+		msgConsentRequest:            "Разрешить %s доступ к этим областям: %s?",
+		msgLogoutRequest:             "Выйти из этого поставщика удостоверений?",
+		msgLogoutCanceled:            "Выход отменён. Вы по-прежнему в системе.",
+		msgLogoutComplete:            "Вы вышли из системы.",
+		msgUsernameAndNameRequired:   "Имя пользователя и имя обязательны",
+		msgInvalidEmail:              "Неверный адрес электронной почты",
+		msgUsernameTaken:             "Имя пользователя уже занято",
+		msgInvalidCredentials:        "Неверное имя пользователя или пароль",
+		msgSignInAgain:               "Войдите снова, чтобы продолжить",
+		msgTooManyAttempts:           "Слишком много неудачных попыток, повторите попытку позже",
+		msgInvalidAuthenticationCode: "Неверный код аутентификации",
+	}},
+	{tag: "zh-Hans", dir: "ltr", messages: map[message]string{
+		msgName:                      "姓名",
+		msgUsername:                  "用户名",
+		msgEmail:                     "电子邮件",
+		msgPassword:                  "密码",
+		msgAuthenticationCode:        "验证码",
+		msgRedirectURI:               "重定向 URI",
+		msgSave:                      "保存",
+		msgSignIn:                    "登录",
+		msgVerify:                    "验证",
+		msgContinue:                  "继续",
+		msgAllow:                     "允许",
+		msgDeny:                      "拒绝",
+		msgLogOut:                    "退出登录",
+		msgCancel:                    "取消",
+		msgReturnToApplication:       "返回应用",
+		msgEnterAuthenticationCode:   "请输入身份验证器应用中的验证码。",
+		msgConsentRequest:            "允许 %s 访问以下权限范围：%s？",
+		msgLogoutRequest:             "要从此身份提供商退出登录吗？",
+		msgLogoutCanceled:            "已取消退出。您仍处于登录状态。",
+		msgLogoutComplete:            "您已退出登录。",
+		msgUsernameAndNameRequired:   "用户名和姓名为必填项",
+		msgInvalidEmail:              "电子邮件地址无效",
+		msgUsernameTaken:             "用户名已被占用",
+		msgInvalidCredentials:        "用户名或密码错误",
+		msgSignInAgain:               "请重新登录以继续",
+		msgTooManyAttempts:           "失败次数过多，请稍后重试",
+		msgInvalidAuthenticationCode: "验证码无效",
+	}},
+	{tag: "zh-Hant", dir: "ltr", messages: map[message]string{
+		msgName:                      "姓名",
+		msgUsername:                  "使用者名稱",
+		msgEmail:                     "電子郵件",
+		msgPassword:                  "密碼",
+		msgAuthenticationCode:        "驗證碼",
+		msgRedirectURI:               "重新導向 URI",
+		msgSave:                      "儲存",
+		msgSignIn:                    "登入",
+		msgVerify:                    "驗證",
+		msgContinue:                  "繼續",
+		msgAllow:                     "允許",
+		msgDeny:                      "拒絕",
+		msgLogOut:                    "登出",
+		msgCancel:                    "取消",
+		msgReturnToApplication:       "返回應用程式",
+		msgEnterAuthenticationCode:   "請輸入驗證器應用程式中的驗證碼。",
+		msgConsentRequest:            "允許 %s 存取以下權限範圍：%s？",
+		msgLogoutRequest:             "要從此身分識別提供者登出嗎？",
+		msgLogoutCanceled:            "已取消登出。您仍處於登入狀態。",
+		msgLogoutComplete:            "您已登出。",
+		msgUsernameAndNameRequired:   "使用者名稱和姓名為必填欄位",
+		msgInvalidEmail:              "電子郵件地址無效",
+		msgUsernameTaken:             "使用者名稱已被使用",
+		msgInvalidCredentials:        "使用者名稱或密碼錯誤",
+		msgSignInAgain:               "請重新登入以繼續",
+		msgTooManyAttempts:           "失敗次數過多，請稍後再試",
+		msgInvalidAuthenticationCode: "驗證碼無效",
+	}},
+}
+
+func resolveLanguage(languages []language, tag string) (language, bool) {
+	primary, script, region := parseLanguageTag(tag)
+	match, ok := language{}, false
+	for _, lang := range languages {
+		candidatePrimary, candidateScript, candidateRegion := parseLanguageTag(lang.tag)
+		if primary != candidatePrimary || (script != "" && candidateScript != "" && script != candidateScript) {
+			continue
+		}
+		if region != "" && region == candidateRegion {
+			return lang, true
+		}
+		if !ok {
+			match, ok = lang, true
+		}
+	}
+	return match, ok
+}
+
+func parseLanguageTag(tag string) (primary, script, region string) {
+	subtags := strings.Split(strings.ToLower(tag), "-")
+	primary, subtags = subtags[0], subtags[1:]
+	if len(subtags) > 0 && len(subtags[0]) == 4 && subtags[0][0] >= 'a' && subtags[0][0] <= 'z' {
+		script, subtags = subtags[0], subtags[1:]
+	}
+	if len(subtags) > 0 && len(subtags[0]) == 2 {
+		region = subtags[0]
+	}
+	switch {
+	case primary == "zh" && script == "" && (region == "tw" || region == "hk" || region == "mo"):
+		script = "hant"
+	case primary == "pt" && region != "" && region != "br":
+		region = "pt"
+	}
+	return primary, script, region
+}
+
+func languageTags(languages []language) []string {
+	tags := make([]string, 0, len(languages))
+	for _, lang := range languages {
+		tags = append(tags, lang.tag)
+	}
+	return tags
+}
+
+func isolateText(s string) string {
+	return firstStrongIsolate + s + popDirectionalIsolate
 }

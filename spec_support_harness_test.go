@@ -107,6 +107,9 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 	if config.ColorScheme != "" {
 		env = append(env, "SIMPLE_IDP_COLOR_SCHEME="+config.ColorScheme)
 	}
+	if config.Language != "" {
+		env = append(env, "SIMPLE_IDP_LANGUAGE="+config.Language)
+	}
 	if config.AccessTokenTTL != 0 {
 		env = append(env, "SIMPLE_IDP_ACCESS_TOKEN_TTL="+config.AccessTokenTTL.String())
 	}
@@ -1320,11 +1323,23 @@ func extractHiddenInputs(t *testing.T, body []byte) url.Values {
 func extractPageTitle(t *testing.T, body []byte) string {
 	t.Helper()
 
-	matches := regexp.MustCompile(`(?s)<h1 id="page-title" data-testid="page-title">(.*?)</h1>`).FindSubmatch(body)
+	matches := regexp.MustCompile(`(?s)<h1 id="page-title" dir="auto" data-testid="page-title">(.*?)</h1>`).FindSubmatch(body)
 	if len(matches) != 2 {
 		t.Fatalf("failed to extract page title from body:\n%s", body)
 	}
 	return string(matches[1])
+}
+
+func expectPageLanguage(t *testing.T, body []byte, lang, dir string) {
+	t.Helper()
+
+	matches := regexp.MustCompile(`<html lang="([^"]*)" dir="([^"]*)">`).FindSubmatch(body)
+	if len(matches) != 3 {
+		t.Fatalf("failed to extract page language from body:\n%s", body)
+	}
+	if string(matches[1]) != lang || string(matches[2]) != dir {
+		t.Fatalf("page language mismatch: got lang=%q dir=%q, want lang=%q dir=%q", matches[1], matches[2], lang, dir)
+	}
 }
 
 func resolveProviderURL(t *testing.T, issuer, ref string) string {

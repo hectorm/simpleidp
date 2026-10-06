@@ -984,7 +984,7 @@ func testProfilePage(t *testing.T) {
 
 				body = fetchProfilePage(t, browser)
 				for _, value := range []string{user.Name, user.Username, user.Email} {
-					if !strings.Contains(string(body), "<dd>"+html.EscapeString(value)+"</dd>") {
+					if !strings.Contains(string(body), `<dd><bdi>`+html.EscapeString(value)+"</bdi></dd>") {
 						t.Fatalf("expected profile value %q, got body=%s", value, body)
 					}
 				}
