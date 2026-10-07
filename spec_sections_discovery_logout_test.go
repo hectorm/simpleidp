@@ -63,7 +63,7 @@ func testProviderMetadata(t *testing.T) {
 		t.Fatalf("unexpected supported code challenge methods: %#v", discovery.CodeChallengeMethodsSupported)
 	}
 	slices.Sort(discovery.ClaimsSupported)
-	if !slices.Equal(discovery.ClaimsSupported, []string{"aud", "auth_time", "email", "email_verified", "exp", "groups", "iat", "iss", "locale", "name", "nonce", "picture", "preferred_username", "profile", "roles", "sid", "sub"}) {
+	if !slices.Equal(discovery.ClaimsSupported, []string{"amr", "aud", "auth_time", "email", "email_verified", "exp", "groups", "iat", "iss", "locale", "name", "nonce", "picture", "preferred_username", "profile", "roles", "sid", "sub"}) {
 		t.Fatalf("unexpected claims_supported: %#v", discovery.ClaimsSupported)
 	}
 	slices.Sort(discovery.PromptValuesSupported)

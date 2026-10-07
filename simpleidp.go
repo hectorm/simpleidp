@@ -540,7 +540,7 @@ func (p *identityProvider) handleDiscovery(w http.ResponseWriter, r *http.Reques
 		TokenEndpointAuthMethodsSupported: []string{"none", "client_secret_basic", "client_secret_post"},
 		CodeChallengeMethodsSupported:     []string{"S256"},
 		ClaimsSupported: []string{
-			"sub", "iss", "aud", "iat", "exp", "auth_time", "nonce", "sid", "email", "email_verified",
+			"sub", "iss", "aud", "iat", "exp", "auth_time", "amr", "nonce", "sid", "email", "email_verified",
 			"name", "preferred_username", "profile", "picture", "locale", "groups", "roles",
 		},
 		PromptValuesSupported:                      []string{"none", "login", "consent", "select_account"},
@@ -2601,6 +2601,10 @@ func (p *identityProvider) mintAccessToken(client client, user user, scope strin
 
 func (p *identityProvider) mintIDToken(user user, client client, code pendingCode, accessToken string, issuedAt time.Time) (string, error) {
 	atHash := sha256.Sum256([]byte(accessToken))
+	amr := []string{"pwd"}
+	if user.totpSecret != nil {
+		amr = append(amr, "otp", "mfa")
+	}
 	payload := map[string]any{
 		"iss":       p.issuer,
 		"sub":       user.sub,
@@ -2608,6 +2612,7 @@ func (p *identityProvider) mintIDToken(user user, client client, code pendingCod
 		"iat":       issuedAt.Unix(),
 		"exp":       issuedAt.Add(p.accessTokenTTL).Unix(),
 		"auth_time": code.authenticatedAt.Unix(),
+		"amr":       amr,
 		"at_hash":   base64.RawURLEncoding.EncodeToString(atHash[:len(atHash)/2]),
 	}
 	if code.nonce != "" {

@@ -10,7 +10,7 @@ var oidcCoreSections = []specSection{
 	{Spec: "OIDC Core 1.0", Section: "1.1", Title: "Requirements Notation and Conventions", Notes: "Notation guidance is not a test target."},
 	{Spec: "OIDC Core 1.0", Section: "1.2", Title: "Terminology", Notes: "Terminology definitions are not test targets."},
 	{Spec: "OIDC Core 1.0", Section: "1.3", Title: "Overview", Notes: "Covered by section 3.1.1."},
-	{Spec: "OIDC Core 1.0", Section: "2", Title: "ID Token", Applicable: true, Notes: "Issuer URL components and subject ASCII and length constraints are validated at startup. As provider policy, user info is rejected in issuer URLs and auth_time is always included, even without max_age. TLS is out of scope, so the issuer may use http.", Run: testIDToken},
+	{Spec: "OIDC Core 1.0", Section: "2", Title: "ID Token", Applicable: true, Notes: "Issuer URL components and subject ASCII and length constraints are validated at startup. As provider policy, user info is rejected in issuer URLs, auth_time is always included, even without max_age, and amr lists the RFC 8176 methods used: pwd, plus otp and mfa for users with an authentication code. TLS is out of scope, so the issuer may use http.", Run: testIDToken},
 	{Spec: "OIDC Core 1.0", Section: "3", Title: "Authentication", Notes: "Covered by the applicable subsections below."},
 	{Spec: "OIDC Core 1.0", Section: "3.1", Title: "Authentication using the Authorization Code Flow", Notes: "Covered by the applicable subsections below."},
 	{Spec: "OIDC Core 1.0", Section: "3.1.1", Title: "Authorization Code Flow Steps", Applicable: true, Run: testAuthorizationCodeFlowSteps},

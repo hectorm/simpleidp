@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1612,6 +1613,9 @@ func testSuccessfulRefreshResponse(t *testing.T) {
 	if refreshedClaims.AuthTime != originalClaims.AuthTime {
 		t.Fatalf("auth_time mismatch: got %d, want %d", refreshedClaims.AuthTime, originalClaims.AuthTime)
 	}
+	if !slices.Equal(refreshedClaims.Amr, originalClaims.Amr) {
+		t.Fatalf("amr mismatch: got %#v, want %#v", refreshedClaims.Amr, originalClaims.Amr)
+	}
 	now := time.Now().Unix()
 	if refreshedClaims.Iat < issuedAfter || refreshedClaims.Iat > now || refreshedClaims.Exp <= now || refreshedClaims.Exp-refreshedClaims.Iat != int64(refreshed.ExpiresIn) {
 		t.Fatalf("unexpected refreshed id token metadata: %#v", refreshedClaims)
@@ -2054,10 +2058,32 @@ func testIDToken(t *testing.T) {
 	if claims.AuthTime == 0 {
 		t.Fatalf("expected auth_time claim, got %#v", claims)
 	}
+	if !slices.Equal(claims.Amr, []string{"pwd"}) {
+		t.Fatalf("amr mismatch: got %#v, want %#v", claims.Amr, []string{"pwd"})
+	}
 	now := time.Now().Unix()
 	if claims.Iat < issuedAfter || claims.Iat > now || claims.Exp <= now || claims.Exp-claims.Iat != int64(token.ExpiresIn) {
 		t.Fatalf("unexpected id token metadata: %#v", claims)
 	}
+
+	t.Run("lists the authentication code in amr", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users[0].TOTPSecret = testTOTPKeyBase32
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("id-token-amr-totp")
+		body := authorizeAndLoginExpectPage(t, provider, request)
+		code := expectAuthorizationCodeRedirect(t, submitTOTPForm(t, provider, body, currentTOTPCode()), http.StatusSeeOther, request.RedirectURI, request.State, provider.issuer)
+		token := exchangeAuthorizationCode(t, provider, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			Code:         code,
+			RedirectURI:  request.RedirectURI,
+			CodeVerifier: request.Verifier,
+		})
+		if claims := verifyIDToken(t, provider, token.IDToken); !slices.Equal(claims.Amr, []string{"pwd", "otp", "mfa"}) {
+			t.Fatalf("amr mismatch: got %#v, want %#v", claims.Amr, []string{"pwd", "otp", "mfa"})
+		}
+	})
 
 	t.Run("accepts a 255-character ASCII subject", func(t *testing.T) {
 		config := defaultProviderConfig()

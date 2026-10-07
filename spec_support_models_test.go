@@ -200,6 +200,7 @@ type idTokenClaims struct {
 	Exp               int64    `json:"exp"`
 	Iat               int64    `json:"iat"`
 	AuthTime          int64    `json:"auth_time"`
+	Amr               []string `json:"amr"`
 	Nonce             string   `json:"nonce"`
 	Sid               string   `json:"sid"`
 	AtHash            string   `json:"at_hash"`
