@@ -27,7 +27,7 @@
 // Clients are configured with a label prefix (the label is arbitrary, used only for grouping):
 //
 // SIMPLE_IDP_CLIENT_<LABEL>_ID                                  - client ID
-// SIMPLE_IDP_CLIENT_<LABEL>_SECRET                              - client secret (optional for loopback/native clients)
+// SIMPLE_IDP_CLIENT_<LABEL>_SECRET                              - client secret (omit for public clients)
 // SIMPLE_IDP_CLIENT_<LABEL>_AUDIENCE                            - "aud" claim of access tokens (default: client ID)
 // SIMPLE_IDP_CLIENT_<LABEL>_REDIRECT_URL                        - allowed redirect URIs (whitespace-separated, optional with a secret)
 // SIMPLE_IDP_CLIENT_<LABEL>_POST_LOGOUT_REDIRECT_URL            - allowed post-logout redirect URIs (whitespace-separated, optional)
@@ -3237,8 +3237,8 @@ func loadClients(environ []string, lookupEnv func(string) string) (map[string]cl
 		if isPublic {
 			for _, rawURL := range redirectURLs {
 				redirectURL, _ := url.Parse(rawURL)
-				if !isLoopbackURL(redirectURL) {
-					return nil, fmt.Errorf("client %q: public clients (no secret) must use loopback redirect URLs", label)
+				if !isLoopbackURL(redirectURL) && redirectURL.Scheme != "https" {
+					return nil, fmt.Errorf("client %q: public clients (no secret) must use loopback or https redirect URLs", label)
 				}
 			}
 		}

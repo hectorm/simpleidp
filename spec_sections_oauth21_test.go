@@ -1468,10 +1468,36 @@ func testOAuth21LoopbackInterfaceRedirection(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects non-loopback redirect uris for public clients", func(t *testing.T) {
+	t.Run("accepts https redirect uris for public clients", func(t *testing.T) {
 		for _, redirectURL := range []string{
-			"https://rp.example/callback",
-			nativeClientRedirect + " https://rp.example/callback",
+			spaClientRedirect,
+			nativeClientRedirect + " " + spaClientRedirect,
+		} {
+			t.Run(redirectURL, func(t *testing.T) {
+				environ := []string{
+					"SIMPLE_IDP_CLIENT_SPA_ID=" + spaClientID,
+					"SIMPLE_IDP_CLIENT_SPA_REDIRECT_URL=" + redirectURL,
+				}
+				clients, err := loadClients(environ, func(name string) string {
+					for _, item := range environ {
+						key, value, _ := strings.Cut(item, "=")
+						if key == name {
+							return value
+						}
+					}
+					return ""
+				})
+				if err != nil || !clients[spaClientID].isPublic {
+					t.Fatalf("expected a public client, got %#v, %v", clients[spaClientID], err)
+				}
+			})
+		}
+	})
+
+	t.Run("rejects non-loopback http redirect uris for public clients", func(t *testing.T) {
+		for _, redirectURL := range []string{
+			"http://rp.example/callback",
+			nativeClientRedirect + " http://rp.example/callback",
 		} {
 			t.Run(redirectURL, func(t *testing.T) {
 				environ := []string{
@@ -1487,8 +1513,8 @@ func testOAuth21LoopbackInterfaceRedirection(t *testing.T) {
 					}
 					return ""
 				})
-				if err == nil || !strings.Contains(err.Error(), "loopback redirect URLs") {
-					t.Fatalf("expected loopback redirect URL error, got %v", err)
+				if err == nil || !strings.Contains(err.Error(), "loopback or https redirect URLs") {
+					t.Fatalf("expected loopback or https redirect URL error, got %v", err)
 				}
 			})
 		}
@@ -1508,6 +1534,71 @@ func testOAuth21LoopbackRedirectConsiderations(t *testing.T) {
 	if authorization.Code == "" {
 		t.Fatalf("expected authorization code, got %#v", authorization)
 	}
+}
+
+func testOAuth21BrowserBasedApps(t *testing.T) {
+	config := defaultProviderConfig()
+	config.Clients = append(config.Clients, clientConfig{
+		Label:       "SPA",
+		ID:          spaClientID,
+		RedirectURL: spaClientRedirect,
+	})
+	provider := startProvider(t, config)
+	request := authorizationRequest{
+		ClientID:    spaClientID,
+		RedirectURI: spaClientRedirect,
+		Scope:       "openid profile",
+		State:       "oauth21-browser-based-apps",
+		Verifier:    pkceVerifier("oauth21-browser-based-apps"),
+	}
+	authorization := authorize(t, provider, request)
+	resp := provider.requestFromOrigin(t, http.MethodPost, provider.endpoint("/token"), spaClientOrigin, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {authorization.Code},
+		"redirect_uri":  {request.RedirectURI},
+		"code_verifier": {request.Verifier},
+		"client_id":     {spaClientID},
+	}, "")
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("token status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+	}
+	assertCORSHeaders(t, resp, spaClientOrigin)
+	var token tokenResponse
+	if err := json.Unmarshal(body, &token); err != nil {
+		t.Fatalf("failed to decode token response: %v\nbody=%s", err, body)
+	}
+
+	t.Run("rotates refresh tokens refreshed from the app origin", func(t *testing.T) {
+		resp := provider.requestFromOrigin(t, http.MethodPost, provider.endpoint("/token"), spaClientOrigin, url.Values{
+			"grant_type":    {"refresh_token"},
+			"refresh_token": {token.RefreshToken},
+			"client_id":     {spaClientID},
+		}, "")
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("refresh status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		assertCORSHeaders(t, resp, spaClientOrigin)
+		var refreshed tokenResponse
+		if err := json.Unmarshal(body, &refreshed); err != nil {
+			t.Fatalf("failed to decode refresh response: %v\nbody=%s", err, body)
+		}
+		if refreshed.RefreshToken == "" || refreshed.RefreshToken == token.RefreshToken {
+			t.Fatalf("expected refresh token rotation, got %#v", refreshed)
+		}
+	})
+
+	t.Run("requires the registered port of https redirect uris", func(t *testing.T) {
+		expectRejectedCORSPreflight(t, provider.preflight(t, provider.endpoint("/token"), "https://spa.example:8443", http.MethodPost), http.StatusNoContent)
+		otherPort := request
+		otherPort.RedirectURI = "https://spa.example:8443/callback"
+		resp := provider.getAuthorize(t, authorizeParams(otherPort))
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusBadRequest, body)
+		}
+	})
 }
 
 func testOAuth21RemovalOfImplicitGrant(t *testing.T) {

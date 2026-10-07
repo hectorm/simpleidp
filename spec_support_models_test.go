@@ -35,6 +35,9 @@ const (
 	otherClientRedirect         = "http://localhost/other/callback"
 	nativeClientID              = "native-client"
 	nativeClientRedirect        = "http://127.0.0.1/callback"
+	spaClientID                 = "spa-client"
+	spaClientRedirect           = "https://spa.example/callback"
+	spaClientOrigin             = "https://spa.example"
 	untrustedOrigin             = "https://untrusted.example"
 
 	authMethodClientSecretPost = "client_secret_post"

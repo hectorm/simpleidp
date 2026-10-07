@@ -61,7 +61,7 @@ Clients are configured with a label prefix. The label is arbitrary and only used
 | Variable                                                        | Description                                                          |
 | --------------------------------------------------------------- | -------------------------------------------------------------------- |
 | `SIMPLE_IDP_CLIENT_<LABEL>_ID`                                  | Client ID                                                            |
-| `SIMPLE_IDP_CLIENT_<LABEL>_SECRET`                              | Client secret (optional for loopback/native clients)                 |
+| `SIMPLE_IDP_CLIENT_<LABEL>_SECRET`                              | Client secret (omit for public clients)                              |
 | `SIMPLE_IDP_CLIENT_<LABEL>_AUDIENCE`                            | `aud` claim of access tokens (default: client ID)                    |
 | `SIMPLE_IDP_CLIENT_<LABEL>_REDIRECT_URL`                        | Allowed redirect URIs (whitespace-separated, optional with a secret) |
 | `SIMPLE_IDP_CLIENT_<LABEL>_POST_LOGOUT_REDIRECT_URL`            | Allowed post-logout redirect URIs (whitespace-separated, optional)   |
