@@ -3432,7 +3432,7 @@ type language struct {
 }
 
 var languages = []language{
-	{tag: "ar", dir: "rtl", messages: map[message]string{
+	{tag: "ar", dir: "rtl", messages: map[message]string{ // #nosec G101
 		msgName:                      "الاسم",
 		msgUsername:                  "اسم المستخدم",
 		msgEmail:                     "البريد الإلكتروني",
@@ -3461,7 +3461,7 @@ var languages = []language{
 		msgTooManyAttempts:           "محاولات فاشلة كثيرة جدًا، حاول مرة أخرى لاحقًا",
 		msgInvalidAuthenticationCode: "رمز المصادقة غير صالح",
 	}},
-	{tag: "de", dir: "ltr", messages: map[message]string{
+	{tag: "de", dir: "ltr", messages: map[message]string{ // #nosec G101
 		msgName:                      "Name",
 		msgUsername:                  "Benutzername",
 		msgEmail:                     "E-Mail",
@@ -3490,7 +3490,7 @@ var languages = []language{
 		msgTooManyAttempts:           "Zu viele Fehlversuche, versuchen Sie es später erneut",
 		msgInvalidAuthenticationCode: "Ungültiger Authentifizierungscode",
 	}},
-	{tag: "en", dir: "ltr", messages: map[message]string{
+	{tag: "en", dir: "ltr", messages: map[message]string{ // #nosec G101
 		msgName:                      "Name",
 		msgUsername:                  "Username",
 		msgEmail:                     "Email",
@@ -3519,7 +3519,7 @@ var languages = []language{
 		msgTooManyAttempts:           "Too many failed attempts, try again later",
 		msgInvalidAuthenticationCode: "Invalid authentication code",
 	}},
-	{tag: "es", dir: "ltr", messages: map[message]string{
+	{tag: "es", dir: "ltr", messages: map[message]string{ // #nosec G101
 		msgName:                      "Nombre",
 		msgUsername:                  "Nombre de usuario",
 		msgEmail:                     "Correo electrónico",
@@ -3548,7 +3548,7 @@ var languages = []language{
 		msgTooManyAttempts:           "Demasiados intentos fallidos, inténtalo de nuevo más tarde",
 		msgInvalidAuthenticationCode: "Código de autenticación no válido",
 	}},
-	{tag: "fr", dir: "ltr", messages: map[message]string{
+	{tag: "fr", dir: "ltr", messages: map[message]string{ // #nosec G101
 		msgName:                      "Nom",
 		msgUsername:                  "Nom d’utilisateur",
 		msgEmail:                     "E-mail",
@@ -3577,7 +3577,7 @@ var languages = []language{
 		msgTooManyAttempts:           "Trop de tentatives infructueuses, réessayez plus tard",
 		msgInvalidAuthenticationCode: "Code d’authentification non valide",
 	}},
-	{tag: "it", dir: "ltr", messages: map[message]string{
+	{tag: "it", dir: "ltr", messages: map[message]string{ // #nosec G101
 		msgName:                      "Nome",
 		msgUsername:                  "Nome utente",
 		msgEmail:                     "Email",
@@ -3606,7 +3606,7 @@ var languages = []language{
 		msgTooManyAttempts:           "Troppi tentativi non riusciti, riprova più tardi",
 		msgInvalidAuthenticationCode: "Codice di autenticazione non valido",
 	}},
-	{tag: "ja", dir: "ltr", messages: map[message]string{
+	{tag: "ja", dir: "ltr", messages: map[message]string{ // #nosec G101
 		msgName:                      "名前",
 		msgUsername:                  "ユーザー名",
 		msgEmail:                     "メールアドレス",
@@ -3635,7 +3635,7 @@ var languages = []language{
 		msgTooManyAttempts:           "失敗回数が多すぎるため、しばらくしてからもう一度お試しください",
 		msgInvalidAuthenticationCode: "認証コードが無効です",
 	}},
-	{tag: "ko", dir: "ltr", messages: map[message]string{
+	{tag: "ko", dir: "ltr", messages: map[message]string{ // #nosec G101
 		msgName:                      "이름",
 		msgUsername:                  "사용자 이름",
 		msgEmail:                     "이메일",
@@ -3664,7 +3664,7 @@ var languages = []language{
 		msgTooManyAttempts:           "실패한 시도가 너무 많습니다. 잠시 후 다시 시도하세요",
 		msgInvalidAuthenticationCode: "유효하지 않은 인증 코드입니다",
 	}},
-	{tag: "pt-BR", dir: "ltr", messages: map[message]string{
+	{tag: "pt-BR", dir: "ltr", messages: map[message]string{ // #nosec G101
 		msgName:                      "Nome",
 		msgUsername:                  "Nome de usuário",
 		msgEmail:                     "E-mail",
@@ -3693,7 +3693,7 @@ var languages = []language{
 		msgTooManyAttempts:           "Muitas tentativas malsucedidas, tente novamente mais tarde",
 		msgInvalidAuthenticationCode: "Código de autenticação inválido",
 	}},
-	{tag: "pt-PT", dir: "ltr", messages: map[message]string{
+	{tag: "pt-PT", dir: "ltr", messages: map[message]string{ // #nosec G101
 		msgName:                      "Nome",
 		msgUsername:                  "Nome de utilizador",
 		msgEmail:                     "E-mail",
@@ -3722,7 +3722,7 @@ var languages = []language{
 		msgTooManyAttempts:           "Demasiadas tentativas falhadas, tente novamente mais tarde",
 		msgInvalidAuthenticationCode: "Código de autenticação inválido",
 	}},
-	{tag: "ru", dir: "ltr", messages: map[message]string{
+	{tag: "ru", dir: "ltr", messages: map[message]string{ // #nosec G101
 		msgName:                      "Имя",
 		msgUsername:                  "Имя пользователя",
 		msgEmail:                     "Электронная почта",
@@ -3751,7 +3751,7 @@ var languages = []language{
 		msgTooManyAttempts:           "Слишком много неудачных попыток, повторите попытку позже",
 		msgInvalidAuthenticationCode: "Неверный код аутентификации",
 	}},
-	{tag: "zh-Hans", dir: "ltr", messages: map[message]string{
+	{tag: "zh-Hans", dir: "ltr", messages: map[message]string{ // #nosec G101
 		msgName:                      "姓名",
 		msgUsername:                  "用户名",
 		msgEmail:                     "电子邮件",
@@ -3780,7 +3780,7 @@ var languages = []language{
 		msgTooManyAttempts:           "失败次数过多，请稍后重试",
 		msgInvalidAuthenticationCode: "验证码无效",
 	}},
-	{tag: "zh-Hant", dir: "ltr", messages: map[message]string{
+	{tag: "zh-Hant", dir: "ltr", messages: map[message]string{ // #nosec G101
 		msgName:                      "姓名",
 		msgUsername:                  "使用者名稱",
 		msgEmail:                     "電子郵件",
