@@ -752,7 +752,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 	}
 
 	if r.Method == http.MethodGet || !credentialsSubmitted {
-		p.renderLoginForm(w, r, p.base+"/authorize", authorization.params, "", msgNone)
+		p.renderLoginForm(w, r, p.base+"/authorize", authorization.params, params.Get("login_hint"), msgNone)
 		return
 	}
 	authenticatedUser, ok := p.authenticateLogin(w, r, p.base+"/authorize", authorization.params)
@@ -1546,8 +1546,8 @@ func (p *identityProvider) renderLoginForm(w http.ResponseWriter, r *http.Reques
 		TestID: "page-login",
 		Params: loginParams,
 		Fields: []formPageField{
-			{Type: "text", Name: "username", Label: lang.messages[msgUsername], Value: username, Autocomplete: "username", Autofocus: true},
-			{Type: "password", Name: "password", Label: lang.messages[msgPassword], Autocomplete: "current-password"},
+			{Type: "text", Name: "username", Label: lang.messages[msgUsername], Value: username, Autocomplete: "username", Autofocus: username == ""},
+			{Type: "password", Name: "password", Label: lang.messages[msgPassword], Autocomplete: "current-password", Autofocus: username != ""},
 		},
 		Buttons: []formPageButton{
 			{Label: lang.messages[msgSignIn]},

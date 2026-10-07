@@ -67,6 +67,23 @@ func testAuthenticationRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("pre-fills the username from login_hint", func(t *testing.T) {
+		params := authorizeParams(newDefaultConfidentialAuthorizationRequest("auth-request-login-hint"))
+		params.Set("login_hint", testUsername)
+		resp := provider.getAuthorize(t, params)
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("authorize status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		username := extractInputTag(t, body, "username")
+		if !strings.Contains(username, `value="`+testUsername+`"`) || strings.Contains(username, "autofocus") {
+			t.Fatalf("expected a pre-filled username field without autofocus, got %q", username)
+		}
+		if password := extractInputTag(t, body, "password"); !strings.Contains(password, "autofocus") {
+			t.Fatalf("expected autofocus on the password field, got %q", password)
+		}
+	})
+
 	t.Run("keeps POSTed authorization parameters out of the login form URL", func(t *testing.T) {
 		request := newDefaultConfidentialAuthorizationRequest("auth-request-post-hidden")
 		body := authorizeByPostExpectLoginPage(t, provider, request)

@@ -1320,6 +1320,16 @@ func extractHiddenInputs(t *testing.T, body []byte) url.Values {
 	return inputs
 }
 
+func extractInputTag(t *testing.T, body []byte, name string) string {
+	t.Helper()
+
+	match := regexp.MustCompile(`<input[^>]*name="` + regexp.QuoteMeta(name) + `"[^>]*>`).Find(body)
+	if match == nil {
+		t.Fatalf("failed to extract input %q from body:\n%s", name, body)
+	}
+	return string(match)
+}
+
 func extractPageTitle(t *testing.T, body []byte) string {
 	t.Helper()
 
