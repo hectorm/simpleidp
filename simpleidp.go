@@ -375,6 +375,7 @@ func newServer(listen string, provider *identityProvider) *http.Server {
 	mux.HandleFunc("GET "+provider.base+"/login", provider.handleLogin)
 	mux.HandleFunc("POST "+provider.base+"/login", provider.handleLogin)
 	mux.HandleFunc("GET "+provider.base+"/.well-known/openid-configuration", provider.handleDiscovery)
+	mux.HandleFunc("GET /.well-known/oauth-authorization-server"+provider.base, provider.handleDiscovery)
 	mux.HandleFunc("GET "+provider.base+"/authorize", provider.handleAuthorize)
 	mux.HandleFunc("POST "+provider.base+"/authorize", provider.handleAuthorize)
 	mux.HandleFunc("POST "+provider.base+"/token", provider.handleToken)
@@ -511,6 +512,8 @@ func (p *identityProvider) handleDiscovery(w http.ResponseWriter, r *http.Reques
 		SubjectTypesSupported                      []string `json:"subject_types_supported"`
 		IDTokenSigningAlgValuesSupported           []string `json:"id_token_signing_alg_values_supported"`
 		TokenEndpointAuthMethodsSupported          []string `json:"token_endpoint_auth_methods_supported"`
+		RevocationEndpointAuthMethodsSupported     []string `json:"revocation_endpoint_auth_methods_supported"`
+		IntrospectionEndpointAuthMethodsSupported  []string `json:"introspection_endpoint_auth_methods_supported"`
 		CodeChallengeMethodsSupported              []string `json:"code_challenge_methods_supported"`
 		ClaimsSupported                            []string `json:"claims_supported"`
 		PromptValuesSupported                      []string `json:"prompt_values_supported"`
@@ -523,22 +526,24 @@ func (p *identityProvider) handleDiscovery(w http.ResponseWriter, r *http.Reques
 		BackchannelLogoutSupported                 bool     `json:"backchannel_logout_supported"`
 		BackchannelLogoutSessionSupported          bool     `json:"backchannel_logout_session_supported"`
 	}{
-		Issuer:                            p.issuer,
-		AuthorizationEndpoint:             p.issuer + "/authorize",
-		TokenEndpoint:                     p.issuer + "/token",
-		UserInfoEndpoint:                  p.issuer + "/userinfo",
-		JWKSURI:                           p.issuer + "/jwks",
-		IntrospectionEndpoint:             p.issuer + "/introspect",
-		RevocationEndpoint:                p.issuer + "/revoke",
-		EndSessionEndpoint:                p.issuer + "/end-session",
-		ScopesSupported:                   []string{"openid", "profile", "email", "groups", "roles"},
-		ResponseTypesSupported:            []string{"code"},
-		ResponseModesSupported:            []string{"query"},
-		GrantTypesSupported:               []string{"authorization_code", "refresh_token", "client_credentials"},
-		SubjectTypesSupported:             []string{"public"},
-		IDTokenSigningAlgValuesSupported:  []string{"RS256"},
-		TokenEndpointAuthMethodsSupported: []string{"none", "client_secret_basic", "client_secret_post"},
-		CodeChallengeMethodsSupported:     []string{"S256"},
+		Issuer:                                    p.issuer,
+		AuthorizationEndpoint:                     p.issuer + "/authorize",
+		TokenEndpoint:                             p.issuer + "/token",
+		UserInfoEndpoint:                          p.issuer + "/userinfo",
+		JWKSURI:                                   p.issuer + "/jwks",
+		IntrospectionEndpoint:                     p.issuer + "/introspect",
+		RevocationEndpoint:                        p.issuer + "/revoke",
+		EndSessionEndpoint:                        p.issuer + "/end-session",
+		ScopesSupported:                           []string{"openid", "profile", "email", "groups", "roles"},
+		ResponseTypesSupported:                    []string{"code"},
+		ResponseModesSupported:                    []string{"query"},
+		GrantTypesSupported:                       []string{"authorization_code", "refresh_token", "client_credentials"},
+		SubjectTypesSupported:                     []string{"public"},
+		IDTokenSigningAlgValuesSupported:          []string{"RS256"},
+		TokenEndpointAuthMethodsSupported:         []string{"none", "client_secret_basic", "client_secret_post"},
+		RevocationEndpointAuthMethodsSupported:    []string{"none", "client_secret_basic", "client_secret_post"},
+		IntrospectionEndpointAuthMethodsSupported: []string{"client_secret_basic", "client_secret_post"},
+		CodeChallengeMethodsSupported:             []string{"S256"},
 		ClaimsSupported: []string{
 			"sub", "iss", "aud", "iat", "exp", "auth_time", "amr", "nonce", "sid", "email", "email_verified",
 			"name", "preferred_username", "profile", "picture", "locale", "groups", "roles",

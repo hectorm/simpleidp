@@ -134,6 +134,8 @@ type discoveryDocument struct {
 	SubjectTypesSupported                      []string `json:"subject_types_supported"`
 	IDTokenSigningAlgValuesSupported           []string `json:"id_token_signing_alg_values_supported"`
 	TokenEndpointAuthMethodsSupported          []string `json:"token_endpoint_auth_methods_supported"`
+	RevocationEndpointAuthMethodsSupported     []string `json:"revocation_endpoint_auth_methods_supported"`
+	IntrospectionEndpointAuthMethodsSupported  []string `json:"introspection_endpoint_auth_methods_supported"`
 	CodeChallengeMethodsSupported              []string `json:"code_challenge_methods_supported"`
 	ClaimsSupported                            []string `json:"claims_supported"`
 	PromptValuesSupported                      []string `json:"prompt_values_supported"`

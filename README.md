@@ -8,22 +8,22 @@ I need an IdP for local development and integration testing. Keycloak is more th
 
 ## Endpoints
 
-The identity provider endpoints are derived from the issuer URL:
+The endpoints are served at these paths, where `<PATH>` is the issuer path:
 
-| Endpoint      | URL                                         |
-| ------------- | ------------------------------------------- |
-| Profile       | `<ISSUER>/`                                 |
-| Login         | `<ISSUER>/login`                            |
-| Discovery     | `<ISSUER>/.well-known/openid-configuration` |
-| Authorization | `<ISSUER>/authorize`                        |
-| Token         | `<ISSUER>/token`                            |
-| UserInfo      | `<ISSUER>/userinfo`                         |
-| JWKS          | `<ISSUER>/jwks`                             |
-| Introspection | `<ISSUER>/introspect`                       |
-| Revocation    | `<ISSUER>/revoke`                           |
-| End session   | `<ISSUER>/end-session`                      |
-
-The healthcheck endpoint is always served at `/healthz`, regardless of the issuer path.
+| Endpoint       | Path                                            |
+| -------------- | ----------------------------------------------- |
+| Profile        | `<PATH>/`                                       |
+| Login          | `<PATH>/login`                                  |
+| Discovery      | `<PATH>/.well-known/openid-configuration`       |
+| OAuth metadata | `/.well-known/oauth-authorization-server<PATH>` |
+| Authorization  | `<PATH>/authorize`                              |
+| Token          | `<PATH>/token`                                  |
+| UserInfo       | `<PATH>/userinfo`                               |
+| JWKS           | `<PATH>/jwks`                                   |
+| Introspection  | `<PATH>/introspect`                             |
+| Revocation     | `<PATH>/revoke`                                 |
+| End session    | `<PATH>/end-session`                            |
+| Healthcheck    | `/healthz`                                      |
 
 ## Configuration
 

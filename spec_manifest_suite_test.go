@@ -9,6 +9,7 @@ package simpleidp
 // OAuth 2.1 draft 15: https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-15.txt
 // RFC 7662: https://www.rfc-editor.org/rfc/rfc7662.txt
 // RFC 7009: https://www.rfc-editor.org/rfc/rfc7009.txt
+// RFC 8414: https://www.rfc-editor.org/rfc/rfc8414.txt
 // RFC 9068: https://www.rfc-editor.org/rfc/rfc9068.txt
 // Simple IdP: README.md
 
@@ -117,6 +118,17 @@ var expectedRFC7009Sections = []string{
 	"7", "7.1", "7.2",
 }
 
+var expectedRFC8414Sections = []string{
+	"1", "1.1", "1.2",
+	"2", "2.1",
+	"3", "3.1", "3.2", "3.3",
+	"4",
+	"5",
+	"6", "6.1", "6.2", "6.3", "6.4",
+	"7", "7.1", "7.1.1", "7.1.2", "7.2", "7.3", "7.3.1",
+	"8", "8.1", "8.2",
+}
+
 var expectedRFC9068Sections = []string{
 	"1", "1.1", "1.2",
 	"2", "2.1", "2.2", "2.2.1", "2.2.2", "2.2.3", "2.2.3.1",
@@ -199,6 +211,7 @@ func allSpecSections() []specSection {
 	sections = append(sections, oauth21Sections...)
 	sections = append(sections, rfc7662Sections...)
 	sections = append(sections, rfc7009Sections...)
+	sections = append(sections, rfc8414Sections...)
 	sections = append(sections, rfc9068Sections...)
 	sections = append(sections, rfc6238Sections...)
 	sections = append(sections, simpleIdPSections...)
@@ -270,6 +283,7 @@ func TestSpecCoverageManifest(t *testing.T) {
 		"OAuth 2.1",
 		"RFC 7662",
 		"RFC 7009",
+		"RFC 8414",
 		"RFC 9068",
 		"RFC 6238",
 		"Simple IdP",
@@ -285,6 +299,7 @@ func TestSpecCoverageManifest(t *testing.T) {
 	assertExactManifestSections(t, "OAuth 2.1", expectedOAuth21Sections, sectionsBySpec["OAuth 2.1"])
 	assertExactManifestSections(t, "RFC 7662", expectedRFC7662Sections, sectionsBySpec["RFC 7662"])
 	assertExactManifestSections(t, "RFC 7009", expectedRFC7009Sections, sectionsBySpec["RFC 7009"])
+	assertExactManifestSections(t, "RFC 8414", expectedRFC8414Sections, sectionsBySpec["RFC 8414"])
 	assertExactManifestSections(t, "RFC 9068", expectedRFC9068Sections, sectionsBySpec["RFC 9068"])
 	assertExactManifestSections(t, "RFC 6238", expectedRFC6238Sections, sectionsBySpec["RFC 6238"])
 	assertExactManifestSections(t, "Simple IdP", expectedSimpleIdPSections, sectionsBySpec["Simple IdP"])
