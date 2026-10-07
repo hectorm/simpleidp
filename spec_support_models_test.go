@@ -29,11 +29,13 @@ const (
 	webClientSecret             = "web-secret"
 	webClientRedirect           = "http://127.0.0.1/callback"
 	webClientPostLogoutRedirect = "http://127.0.0.1/logout/callback"
+	webClientOrigin             = "http://127.0.0.1"
 	otherClientID               = "other-client"
 	otherClientSecret           = "other-secret"
 	otherClientRedirect         = "http://localhost/other/callback"
 	nativeClientID              = "native-client"
 	nativeClientRedirect        = "http://127.0.0.1/callback"
+	untrustedOrigin             = "https://untrusted.example"
 
 	authMethodClientSecretPost = "client_secret_post"
 )

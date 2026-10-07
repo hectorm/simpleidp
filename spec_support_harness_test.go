@@ -443,6 +443,40 @@ func (p *providerProcess) postCrossSite(t *testing.T, target string, form url.Va
 	return p.do(t, newHTTPClient(false, nil), req)
 }
 
+func (p *providerProcess) preflight(t *testing.T, target, origin, method string) *http.Response {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodOptions, target, nil)
+	if err != nil {
+		t.Fatalf("failed to create preflight request: %v", err)
+	}
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Access-Control-Request-Method", method)
+	req.Header.Set("Access-Control-Request-Headers", "authorization")
+	return p.do(t, p.redirectless, req)
+}
+
+func (p *providerProcess) requestFromOrigin(t *testing.T, method, target, origin string, form url.Values, authorization string) *http.Response {
+	t.Helper()
+
+	var body io.Reader
+	if form != nil {
+		body = strings.NewReader(form.Encode())
+	}
+	req, err := http.NewRequest(method, target, body)
+	if err != nil {
+		t.Fatalf("failed to create cross-origin request: %v", err)
+	}
+	req.Header.Set("Origin", origin)
+	if form != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	return p.do(t, p.redirectless, req)
+}
+
 func (p *providerProcess) do(t *testing.T, client *http.Client, req *http.Request) *http.Response {
 	t.Helper()
 

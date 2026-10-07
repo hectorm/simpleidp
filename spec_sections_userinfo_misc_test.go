@@ -265,6 +265,58 @@ func testAdditionalClaims(t *testing.T) {
 	}
 }
 
+func testUserInfoEndpoint(t *testing.T) {
+	provider := startProvider(t, defaultProviderConfig())
+	request := newDefaultConfidentialAuthorizationRequest("userinfo-endpoint")
+	token := authorizeAndExchange(t, provider, request, tokenRequest{
+		ClientID:     request.ClientID,
+		ClientSecret: webClientSecret,
+		CodeVerifier: request.Verifier,
+	})
+	endpoint := provider.endpoint("/userinfo")
+
+	t.Run("supports CORS preflight requests from registered origins", func(t *testing.T) {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			t.Run(method, func(t *testing.T) {
+				expectCORSPreflight(t, provider.preflight(t, endpoint, webClientOrigin, method), webClientOrigin, method)
+			})
+		}
+	})
+
+	t.Run("allows cross-origin reads of GET and POST responses from registered origins", func(t *testing.T) {
+		for method, resp := range map[string]*http.Response{
+			http.MethodGet:  provider.requestFromOrigin(t, http.MethodGet, endpoint, webClientOrigin, nil, "Bearer "+token.AccessToken),
+			http.MethodPost: provider.requestFromOrigin(t, http.MethodPost, endpoint, webClientOrigin, url.Values{"access_token": {token.AccessToken}}, ""),
+		} {
+			body := readBody(t, resp)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("userinfo %s status mismatch: got %s, want %d; body=%s", method, resp.Status, http.StatusOK, body)
+			}
+			assertCORSHeaders(t, resp, webClientOrigin)
+		}
+	})
+
+	t.Run("exposes the WWW-Authenticate header of error responses", func(t *testing.T) {
+		resp := provider.requestFromOrigin(t, http.MethodGet, endpoint, webClientOrigin, nil, "Bearer invalid-access-token")
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
+		}
+		assertCORSHeaders(t, resp, webClientOrigin)
+		assertHeaderDirective(t, resp.Header, "Access-Control-Expose-Headers", "WWW-Authenticate")
+	})
+
+	t.Run("does not allow unregistered origins", func(t *testing.T) {
+		expectRejectedCORSPreflight(t, provider.preflight(t, endpoint, untrustedOrigin, http.MethodGet), http.StatusNoContent)
+		resp := provider.requestFromOrigin(t, http.MethodGet, endpoint, untrustedOrigin, nil, "Bearer "+token.AccessToken)
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		assertNoCORSHeaders(t, resp)
+	})
+}
+
 func testUserInfoRequest(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 	request := newDefaultConfidentialAuthorizationRequest("userinfo-request")

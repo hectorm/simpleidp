@@ -374,16 +374,22 @@ func newServer(listen string, provider *identityProvider) *http.Server {
 	}
 	mux.HandleFunc("GET "+provider.base+"/login", provider.handleLogin)
 	mux.HandleFunc("POST "+provider.base+"/login", provider.handleLogin)
-	mux.HandleFunc("GET "+provider.base+"/.well-known/openid-configuration", provider.handleDiscovery)
-	mux.HandleFunc("GET /.well-known/oauth-authorization-server"+provider.base, provider.handleDiscovery)
+	mux.HandleFunc("GET "+provider.base+"/.well-known/openid-configuration", allowCORS(provider.handleDiscovery, anyOrigin))
+	mux.HandleFunc("OPTIONS "+provider.base+"/.well-known/openid-configuration", allowCORSPreflight(anyOrigin))
+	mux.HandleFunc("GET /.well-known/oauth-authorization-server"+provider.base, allowCORS(provider.handleDiscovery, anyOrigin))
+	mux.HandleFunc("OPTIONS /.well-known/oauth-authorization-server"+provider.base, allowCORSPreflight(anyOrigin))
 	mux.HandleFunc("GET "+provider.base+"/authorize", provider.handleAuthorize)
 	mux.HandleFunc("POST "+provider.base+"/authorize", provider.handleAuthorize)
-	mux.HandleFunc("POST "+provider.base+"/token", provider.handleToken)
-	mux.HandleFunc("GET "+provider.base+"/userinfo", provider.handleUserInfo)
-	mux.HandleFunc("POST "+provider.base+"/userinfo", provider.handleUserInfo)
-	mux.HandleFunc("GET "+provider.base+"/jwks", provider.handleJWKS)
+	mux.HandleFunc("POST "+provider.base+"/token", allowCORS(provider.handleToken, provider.registeredOrigin))
+	mux.HandleFunc("OPTIONS "+provider.base+"/token", allowCORSPreflight(provider.registeredOrigin))
+	mux.HandleFunc("GET "+provider.base+"/userinfo", allowCORS(provider.handleUserInfo, provider.registeredOrigin))
+	mux.HandleFunc("POST "+provider.base+"/userinfo", allowCORS(provider.handleUserInfo, provider.registeredOrigin))
+	mux.HandleFunc("OPTIONS "+provider.base+"/userinfo", allowCORSPreflight(provider.registeredOrigin))
+	mux.HandleFunc("GET "+provider.base+"/jwks", allowCORS(provider.handleJWKS, anyOrigin))
+	mux.HandleFunc("OPTIONS "+provider.base+"/jwks", allowCORSPreflight(anyOrigin))
 	mux.HandleFunc("POST "+provider.base+"/introspect", provider.handleIntrospect)
-	mux.HandleFunc("POST "+provider.base+"/revoke", provider.handleRevoke)
+	mux.HandleFunc("POST "+provider.base+"/revoke", allowCORS(provider.handleRevoke, provider.registeredOrigin))
+	mux.HandleFunc("OPTIONS "+provider.base+"/revoke", allowCORSPreflight(provider.registeredOrigin))
 	mux.HandleFunc("GET "+provider.base+"/end-session", provider.handleEndSession)
 	mux.HandleFunc("POST "+provider.base+"/end-session", provider.handleEndSession)
 	mux.HandleFunc("GET "+provider.base+"/favicon.ico", provider.handleFavicon)
@@ -2552,6 +2558,31 @@ func (p *identityProvider) authenticateProtectedResource(w http.ResponseWriter, 
 	return c, true
 }
 
+func (p *identityProvider) registeredOrigin(r *http.Request) string {
+	rawOrigin := r.Header.Get("Origin")
+	origin, err := url.Parse(rawOrigin)
+	if err != nil || rawOrigin != origin.Scheme+"://"+origin.Host {
+		return ""
+	}
+	defaultPort := map[string]string{"http": "80", "https": "443"}[origin.Scheme]
+	originIP := net.ParseIP(origin.Hostname())
+	originPort := cmp.Or(origin.Port(), defaultPort)
+	for _, client := range p.clients {
+		for _, rawRedirectURL := range client.redirectURLs {
+			redirectURL, err := url.Parse(rawRedirectURL)
+			if err != nil || redirectURL.Scheme != origin.Scheme {
+				continue
+			}
+			sameHost := strings.EqualFold(redirectURL.Hostname(), origin.Hostname()) || originIP != nil && originIP.Equal(net.ParseIP(redirectURL.Hostname()))
+			samePort := cmp.Or(redirectURL.Port(), defaultPort) == originPort
+			if sameHost && (samePort || client.isPublic && isLoopbackURL(redirectURL)) {
+				return rawOrigin
+			}
+		}
+	}
+	return ""
+}
+
 func (p *identityProvider) throttleWait(key string, maxDelay time.Duration, now time.Time) time.Duration {
 	attempts := p.throttles[key]
 	if attempts.failures < throttleFreeFailures {
@@ -2787,6 +2818,42 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeTokenError(w http.ResponseWriter, status int, errorCode, errorDescription string) {
 	writeJSON(w, status, map[string]string{"error": errorCode, "error_description": errorDescription})
+}
+
+func allowCORS(handler http.HandlerFunc, allowedOrigin func(*http.Request) string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if writeCORSOrigin(w, r, allowedOrigin) {
+			w.Header().Set("Access-Control-Expose-Headers", "WWW-Authenticate")
+		}
+		handler(w, r)
+	}
+}
+
+func allowCORSPreflight(allowedOrigin func(*http.Request) string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if writeCORSOrigin(w, r, allowedOrigin) {
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func writeCORSOrigin(w http.ResponseWriter, r *http.Request, allowedOrigin func(*http.Request) string) bool {
+	origin := allowedOrigin(r)
+	if origin != "*" {
+		w.Header().Add("Vary", "Origin")
+	}
+	if origin == "" {
+		return false
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	return true
+}
+
+func anyOrigin(*http.Request) string {
+	return "*"
 }
 
 func parseForm(w http.ResponseWriter, r *http.Request) error {

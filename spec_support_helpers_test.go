@@ -73,6 +73,52 @@ func assertTokenResponseHeaders(t *testing.T, resp *http.Response) {
 	assertHeaderDirective(t, resp.Header, "Cache-Control", "no-store")
 }
 
+func assertCORSHeaders(t *testing.T, resp *http.Response, origin string) {
+	t.Helper()
+
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Fatalf("Access-Control-Allow-Origin mismatch: got %q, want %q", got, origin)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Fatalf("did not expect Access-Control-Allow-Credentials, got %q", got)
+	}
+	if origin != "*" {
+		assertHeaderDirective(t, resp.Header, "Vary", "Origin")
+	}
+}
+
+func assertNoCORSHeaders(t *testing.T, resp *http.Response) {
+	t.Helper()
+
+	for name, values := range resp.Header {
+		if strings.HasPrefix(name, "Access-Control-") {
+			t.Fatalf("did not expect CORS header %s, got %#v", name, values)
+		}
+	}
+}
+
+func expectCORSPreflight(t *testing.T, resp *http.Response, origin, method string) {
+	t.Helper()
+
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("preflight status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusNoContent, body)
+	}
+	assertCORSHeaders(t, resp, origin)
+	assertHeaderDirective(t, resp.Header, "Access-Control-Allow-Methods", method)
+	assertHeaderDirective(t, resp.Header, "Access-Control-Allow-Headers", "Authorization")
+}
+
+func expectRejectedCORSPreflight(t *testing.T, resp *http.Response, status int) {
+	t.Helper()
+
+	body := readBody(t, resp)
+	if resp.StatusCode != status {
+		t.Fatalf("preflight status mismatch: got %s, want %d; body=%s", resp.Status, status, body)
+	}
+	assertNoCORSHeaders(t, resp)
+}
+
 var bearerChallengeAttributePattern = regexp.MustCompile(`^[ \t]*([!#$%&'*+.^_|~0-9A-Za-z\x60-]+)[ \t]*=[ \t]*("(?:[\t\x20-\x21\x23-\x5b\x5d-\x7e\x80-\x{10ffff}]|\\[\t\x20-\x7e\x80-\x{10ffff}])*"|[!#$%&'*+.^_|~0-9A-Za-z\x60-]+)[ \t]*(,|$)`)
 
 func assertBearerChallenge(t *testing.T, header, errorCode string) map[string]string {

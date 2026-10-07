@@ -11,7 +11,7 @@ var rfc8414Sections = []specSection{
 	{Spec: "RFC 8414", Section: "1.2", Title: "Terminology", Notes: "Terminology definitions are not test targets."},
 	{Spec: "RFC 8414", Section: "2", Title: "Authorization Server Metadata", Applicable: true, Notes: "Dynamic client registration and JWT client authentication are not implemented, so registration_endpoint and the authentication signing algorithms are omitted. The service_documentation, op_policy_uri, and op_tos_uri values are not published. OpenID Provider metadata values are covered by OIDC Discovery 1.0 section 3.", Run: testAuthorizationServerMetadata},
 	{Spec: "RFC 8414", Section: "2.1", Title: "Signed Authorization Server Metadata", Notes: "Signed metadata is not implemented."},
-	{Spec: "RFC 8414", Section: "3", Title: "Obtaining Authorization Server Metadata", Applicable: true, Notes: "TLS is out of scope, so the metadata URL may use http.", Run: testObtainingAuthorizationServerMetadata},
+	{Spec: "RFC 8414", Section: "3", Title: "Obtaining Authorization Server Metadata", Applicable: true, Notes: "TLS is out of scope, so the metadata URL may use http. As OAuth 2.1 section 3.2 recommends for metadata URLs, the endpoint supports CORS.", Run: testObtainingAuthorizationServerMetadata},
 	{Spec: "RFC 8414", Section: "3.1", Title: "Authorization Server Metadata Request", Applicable: true, Run: testAuthorizationServerMetadataRequest},
 	{Spec: "RFC 8414", Section: "3.2", Title: "Authorization Server Metadata Response", Applicable: true, Run: testAuthorizationServerMetadataResponse},
 	{Spec: "RFC 8414", Section: "3.3", Title: "Authorization Server Metadata Validation", Applicable: true, Run: testAuthorizationServerMetadataValidation},

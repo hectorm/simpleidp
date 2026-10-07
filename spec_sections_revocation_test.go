@@ -334,6 +334,31 @@ func testRevocationErrorResponse(t *testing.T) {
 	})
 }
 
+func testRevocationCrossOriginSupport(t *testing.T) {
+	provider := startProvider(t, defaultProviderConfig())
+	endpoint := provider.endpoint("/revoke")
+
+	t.Run("supports CORS preflight requests from registered origins", func(t *testing.T) {
+		expectCORSPreflight(t, provider.preflight(t, endpoint, webClientOrigin, http.MethodPost), webClientOrigin, http.MethodPost)
+	})
+
+	t.Run("allows cross-origin reads of revocation responses from registered origins", func(t *testing.T) {
+		resp := provider.requestFromOrigin(t, http.MethodPost, endpoint, webClientOrigin, url.Values{
+			"client_id": {nativeClientID},
+			"token":     {"unknown-token"},
+		}, "")
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("revocation status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		assertCORSHeaders(t, resp, webClientOrigin)
+	})
+
+	t.Run("does not allow unregistered origins", func(t *testing.T) {
+		expectRejectedCORSPreflight(t, provider.preflight(t, endpoint, untrustedOrigin, http.MethodPost), http.StatusNoContent)
+	})
+}
+
 func testRevocationImplementationNote(t *testing.T) {
 	provider := startProvider(t, defaultProviderConfig())
 	request := newDefaultConfidentialAuthorizationRequest("revoke-implementation-note")

@@ -267,6 +267,100 @@ func testOAuth21AuthorizationEndpoint(t *testing.T) {
 	if !strings.Contains(string(body), "Sign in") {
 		t.Fatalf("expected login form, got body=%s", body)
 	}
+
+	t.Run("does not support CORS", func(t *testing.T) {
+		assertNoCORSHeaders(t, resp)
+		expectRejectedCORSPreflight(t, provider.preflight(t, provider.endpoint("/authorize"), webClientOrigin, http.MethodGet), http.StatusMethodNotAllowed)
+	})
+}
+
+func testOAuth21TokenEndpoint(t *testing.T) {
+	provider := startProvider(t, defaultProviderConfig())
+	endpoint := provider.endpoint("/token")
+
+	t.Run("supports CORS preflight requests from registered origins", func(t *testing.T) {
+		expectCORSPreflight(t, provider.preflight(t, endpoint, webClientOrigin, http.MethodPost), webClientOrigin, http.MethodPost)
+	})
+
+	t.Run("allows cross-origin reads of token responses from registered origins", func(t *testing.T) {
+		request := newDefaultConfidentialAuthorizationRequest("oauth21-token-endpoint-cors")
+		authorization := authorize(t, provider, request)
+		resp := provider.requestFromOrigin(t, http.MethodPost, endpoint, webClientOrigin, url.Values{
+			"grant_type":    {"authorization_code"},
+			"code":          {authorization.Code},
+			"redirect_uri":  {request.RedirectURI},
+			"code_verifier": {request.Verifier},
+			"client_id":     {request.ClientID},
+			"client_secret": {webClientSecret},
+		}, "")
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("token status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		assertCORSHeaders(t, resp, webClientOrigin)
+	})
+
+	t.Run("allows cross-origin reads of token error responses from registered origins", func(t *testing.T) {
+		resp := provider.requestFromOrigin(t, http.MethodPost, endpoint, webClientOrigin, url.Values{
+			"grant_type":    {"authorization_code"},
+			"code":          {"unknown-code"},
+			"redirect_uri":  {webClientRedirect},
+			"code_verifier": {pkceVerifier("oauth21-token-endpoint-cors-error")},
+			"client_id":     {webClientID},
+			"client_secret": {webClientSecret},
+		}, "")
+		if errResp := expectJSONError(t, resp, http.StatusBadRequest); errResp.Error != "invalid_grant" {
+			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_grant")
+		}
+		assertCORSHeaders(t, resp, webClientOrigin)
+	})
+
+	t.Run("allows loopback origins of public clients on any port", func(t *testing.T) {
+		origin := "http://127.0.0.1:5173"
+		expectCORSPreflight(t, provider.preflight(t, endpoint, origin, http.MethodPost), origin, http.MethodPost)
+	})
+
+	t.Run("normalizes default ports, host case, and IPv6 addresses of registered origins", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Clients = append(config.Clients, clientConfig{
+			Label:       "ORIGIN",
+			ID:          "origin-client",
+			Secret:      "origin-secret",
+			RedirectURL: "https://App.Example:443/callback http://[0:0:0:0:0:0:0:1]:8080/callback",
+		})
+		provider := startProvider(t, config)
+		endpoint := provider.endpoint("/token")
+		for _, origin := range []string{"https://app.example", "http://[::1]:8080"} {
+			t.Run(origin, func(t *testing.T) {
+				expectCORSPreflight(t, provider.preflight(t, endpoint, origin, http.MethodPost), origin, http.MethodPost)
+			})
+		}
+		for _, origin := range []string{"https://app.example:8443", "http://[::1]:8081"} {
+			t.Run(origin, func(t *testing.T) {
+				expectRejectedCORSPreflight(t, provider.preflight(t, endpoint, origin, http.MethodPost), http.StatusNoContent)
+			})
+		}
+	})
+
+	t.Run("does not allow unregistered origins", func(t *testing.T) {
+		for _, origin := range []string{untrustedOrigin, "http://localhost:5173", "null", webClientOrigin + "/callback", webClientOrigin + "#fragment"} {
+			t.Run(origin, func(t *testing.T) {
+				expectRejectedCORSPreflight(t, provider.preflight(t, endpoint, origin, http.MethodPost), http.StatusNoContent)
+			})
+		}
+		resp := provider.requestFromOrigin(t, http.MethodPost, endpoint, untrustedOrigin, url.Values{
+			"grant_type": {"client_credentials"},
+			"client_id":  {webClientID},
+		}, "")
+		if errResp := expectJSONError(t, resp, http.StatusUnauthorized); errResp.Error != "invalid_client" {
+			t.Fatalf("error mismatch: got %q, want %q", errResp.Error, "invalid_client")
+		}
+		assertNoCORSHeaders(t, resp)
+	})
+
+	t.Run("does not support CORS at the introspection endpoint", func(t *testing.T) {
+		expectRejectedCORSPreflight(t, provider.preflight(t, provider.endpoint("/introspect"), webClientOrigin, http.MethodPost), http.StatusMethodNotAllowed)
+	})
 }
 
 func testOAuth21AuthorizationCodeGrant(t *testing.T) {

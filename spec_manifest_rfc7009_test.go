@@ -12,7 +12,7 @@ var rfc7009Sections = []specSection{
 	{Spec: "RFC 7009", Section: "2.1", Title: "Revocation Request", Applicable: true, Notes: "Missing, empty, and duplicate token parameters and malformed request bodies are rejected; both token types are found despite incorrect or unknown hints.", Run: testRevocationRequest},
 	{Spec: "RFC 7009", Section: "2.2", Title: "Revocation Response", Applicable: true, Notes: "Revoking a refresh token also revokes the access tokens of its grant.", Run: testRevocationResponse},
 	{Spec: "RFC 7009", Section: "2.2.1", Title: "Error Response", Applicable: true, Run: testRevocationErrorResponse},
-	{Spec: "RFC 7009", Section: "2.3", Title: "Cross-Origin Support", Notes: "CORS and JSONP are not implemented."},
+	{Spec: "RFC 7009", Section: "2.3", Title: "Cross-Origin Support", Applicable: true, Notes: "As provider policy, CORS is limited to the origins of registered redirect URIs, as covered by OAuth 2.1 section 3.2. JSONP is not implemented.", Run: testRevocationCrossOriginSupport},
 	{Spec: "RFC 7009", Section: "3", Title: "Implementation Note", Applicable: true, Run: testRevocationImplementationNote},
 	{Spec: "RFC 7009", Section: "4", Title: "IANA Considerations", Notes: "IANA registration text is not a test target."},
 	{Spec: "RFC 7009", Section: "4.1", Title: "OAuth Extensions Error Registration", Notes: "IANA registration text is not a test target."},

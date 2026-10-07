@@ -86,6 +86,34 @@ func testProviderMetadata(t *testing.T) {
 	if discovery.RequireRequestURIRegistration {
 		t.Fatal("require_request_uri_registration should be false")
 	}
+
+	t.Run("allows CORS from any origin at the jwks_uri endpoint", func(t *testing.T) {
+		expectCORSPreflight(t, provider.preflight(t, discovery.JWKSURI, untrustedOrigin, http.MethodGet), "*", http.MethodGet)
+		resp := provider.requestFromOrigin(t, http.MethodGet, discovery.JWKSURI, untrustedOrigin, nil, "")
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("jwks status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		assertCORSHeaders(t, resp, "*")
+	})
+}
+
+func testObtainingProviderConfigurationInformation(t *testing.T) {
+	provider := startProvider(t, defaultProviderConfig())
+	endpoint := provider.endpoint("/.well-known/openid-configuration")
+
+	t.Run("supports CORS preflight requests from any origin", func(t *testing.T) {
+		expectCORSPreflight(t, provider.preflight(t, endpoint, untrustedOrigin, http.MethodGet), "*", http.MethodGet)
+	})
+
+	t.Run("allows cross-origin reads of the provider configuration from any origin", func(t *testing.T) {
+		resp := provider.requestFromOrigin(t, http.MethodGet, endpoint, untrustedOrigin, nil, "")
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("discovery status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		assertCORSHeaders(t, resp, "*")
+	})
 }
 
 func testProviderConfigurationRequest(t *testing.T) {

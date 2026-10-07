@@ -138,6 +138,19 @@ func testObtainingAuthorizationServerMetadata(t *testing.T) {
 		}
 	})
 
+	t.Run("allows CORS from any origin", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.IssuerPath = "/issuer1"
+		provider := startProvider(t, config)
+		metadataURL := authorizationServerMetadataURL(t, provider.issuer)
+		expectCORSPreflight(t, provider.preflight(t, metadataURL, untrustedOrigin, http.MethodGet), "*", http.MethodGet)
+		resp := provider.requestFromOrigin(t, http.MethodGet, metadataURL, untrustedOrigin, nil, "")
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("metadata status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		assertCORSHeaders(t, resp, "*")
+	})
 }
 
 func testAuthorizationServerMetadataRequest(t *testing.T) {

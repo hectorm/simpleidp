@@ -76,7 +76,7 @@ var oidcCoreSections = []specSection{
 	{Spec: "OIDC Core 1.0", Section: "5.1.1", Title: "Address Claim", Notes: "The address scope and claim are not implemented."},
 	{Spec: "OIDC Core 1.0", Section: "5.1.2", Title: "Additional Claims", Applicable: true, Notes: "The groups and roles claims in access tokens are covered by RFC 9068 section 2.2.3.1, and in introspection responses by RFC 7662 section 5.", Run: testAdditionalClaims},
 	{Spec: "OIDC Core 1.0", Section: "5.2", Title: "Claims Languages and Scripts", Notes: "Localized claims are not implemented, so claims_locales is ignored; ui_locales selects the page language, as covered by Simple IdP section 4."},
-	{Spec: "OIDC Core 1.0", Section: "5.3", Title: "UserInfo Endpoint", Notes: "Covered by the applicable subsections below; CORS is not implemented, and TLS is out of scope."},
+	{Spec: "OIDC Core 1.0", Section: "5.3", Title: "UserInfo Endpoint", Applicable: true, Notes: "Requests, responses, and errors are covered by the subsections below, and TLS is out of scope. As provider policy, CORS is limited to the origins of registered redirect URIs, as covered by OAuth 2.1 section 3.2.", Run: testUserInfoEndpoint},
 	{Spec: "OIDC Core 1.0", Section: "5.3.1", Title: "UserInfo Request", Applicable: true, Run: testUserInfoRequest},
 	{Spec: "OIDC Core 1.0", Section: "5.3.2", Title: "Successful UserInfo Response", Applicable: true, Run: testSuccessfulUserInfoResponse},
 	{Spec: "OIDC Core 1.0", Section: "5.3.3", Title: "UserInfo Error Response", Applicable: true, Notes: "UserInfo returns invalid_request for malformed requests, invalid_token for unknown or expired access tokens, and insufficient_scope for access tokens without the openid scope.", Run: testUserInfoErrorResponse},

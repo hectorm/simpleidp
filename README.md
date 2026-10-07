@@ -25,6 +25,8 @@ The endpoints are served at these paths, where `<PATH>` is the issuer path:
 | End session    | `<PATH>/end-session`                            |
 | Healthcheck    | `/healthz`                                      |
 
+Discovery, OAuth metadata, and JWKS accept cross-origin requests from any origin. Token, UserInfo, and revocation accept them only from client redirect URI origins.
+
 ## Configuration
 
 All configuration is done through environment variables. At least one client and one user must be configured.
