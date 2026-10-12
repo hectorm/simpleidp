@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -8,7 +9,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/hectorm/simpleidp"
@@ -42,9 +45,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	shutdownErr := make(chan error, 1)
+	go func() {
+		<-ctx.Done()
+		stop()
+		slog.Info("simpleidp shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shutdownErr <- srv.Shutdown(shutdownCtx)
+	}()
+
 	slog.Info("simpleidp listening", "address", listen)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server error", "error", err)
+		os.Exit(1)
+	}
+	if err := <-shutdownErr; err != nil {
+		slog.Error("failed to shut down", "error", err)
 		os.Exit(1)
 	}
 }

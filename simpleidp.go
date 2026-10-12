@@ -13,15 +13,16 @@
 // SIMPLE_IDP_ACCENT_COLOR           - accent color for the pages (default: "oklch(49% 0.19 264)")
 // SIMPLE_IDP_COLOR_SCHEME           - CSS color-scheme value for the pages (default: "light dark")
 // SIMPLE_IDP_LANGUAGE               - language for every page (default: negotiated)
-// SIMPLE_IDP_EDIT_PROFILE           - let users edit their profile, not persisted (default: "false")
+// SIMPLE_IDP_EDIT_PROFILE           - let users edit their profile (default: "false")
 // SIMPLE_IDP_SESSION_IDLE_TTL       - session idle timeout (default: "30m")
 // SIMPLE_IDP_SESSION_MAX_TTL        - session maximum lifetime (default: "10h")
 // SIMPLE_IDP_ACCESS_TOKEN_TTL       - access and ID token lifetime (default: "5m")
 // SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL - refresh token idle timeout (default: "30m")
 // SIMPLE_IDP_REFRESH_TOKEN_MAX_TTL  - refresh token maximum lifetime (default: "10h")
-// SIMPLE_IDP_KEY_ID                 - JWKS key ID (default: "simpleidp")
-// SIMPLE_IDP_KEY_FILE               - PEM file for PKCS8 RSA private key (generated in memory if empty)
-// SIMPLE_IDP_KEY_B64                - base64-encoded PKCS8 RSA private key (alternative to KEY_FILE)
+// SIMPLE_IDP_KEY_ID                 - comma-separated JWKS key IDs, one per key (default: RFC 7638 thumbprints)
+// SIMPLE_IDP_KEY_FILE               - PEM file with PKCS8 RSA private keys (generated if empty)
+// SIMPLE_IDP_KEY_B64                - comma-separated base64 PKCS8 RSA private keys (alternative to KEY_FILE)
+// SIMPLE_IDP_STATE_FILE             - JSON file that persists the state (default: in-memory)
 // SIMPLE_IDP_LOG_LEVEL              - log level: "debug", "info", "warn", or "error" (default: "info")
 //
 // Clients are configured with a label prefix (the label is arbitrary, used only for grouping):
@@ -54,6 +55,7 @@
 package simpleidp
 
 import (
+	"bytes"
 	"cmp"
 	"compress/gzip"
 	"context"
@@ -82,6 +84,7 @@ import (
 	"net/http"
 	"net/mail"
 	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -160,58 +163,67 @@ type user struct {
 	roles             []string
 }
 
+type userEdit struct {
+	Username string
+	Name     string
+	Email    string
+}
+
 type session struct {
-	userLabel       string
-	cookieDigest    [sha256.Size]byte
-	clientIDs       map[string]struct{}
-	authenticatedAt time.Time
-	lastSeenAt      time.Time
+	UserLabel       string
+	CookieDigest    [sha256.Size]byte
+	ClientIDs       map[string]struct{}
+	AuthenticatedAt time.Time
+	AMR             []string
+	LastSeenAt      time.Time
 }
 
 type accessToken struct {
-	clientID  string
-	userLabel string
-	scope     string
-	code      string
-	sessionID string
-	expiry    time.Time
+	ClientID  string
+	UserLabel string
+	Scope     string
+	Code      string
+	SessionID string
+	Expiry    time.Time
 }
 
 type refreshToken struct {
-	clientID         string
-	userLabel        string
-	scope            string
-	code             string
-	sessionID        string
-	authenticatedAt  time.Time
-	sessionStartedAt time.Time
-	createdAt        time.Time
-	consumedAt       time.Time
+	ClientID         string
+	UserLabel        string
+	Scope            string
+	Code             string
+	SessionID        string
+	AuthenticatedAt  time.Time
+	AMR              []string
+	SessionStartedAt time.Time
+	CreatedAt        time.Time
+	ConsumedAt       time.Time
 }
 
 type pendingCode struct {
-	clientID        string
-	userLabel       string
-	redirectURI     string
-	codeChallenge   string
-	nonce           string
-	state           string
-	scope           string
-	sessionID       string
-	consentRequired bool
-	authenticatedAt time.Time
-	createdAt       time.Time
-	consumedAt      time.Time
+	ClientID        string
+	UserLabel       string
+	RedirectURI     string
+	CodeChallenge   string
+	Nonce           string
+	State           string
+	Scope           string
+	SessionID       string
+	ConsentRequired bool
+	AuthenticatedAt time.Time
+	AMR             []string
+	CreatedAt       time.Time
+	ConsumedAt      time.Time
 }
 
 type pendingTOTP struct {
-	userLabel string
-	createdAt time.Time
+	UserLabel string
+	CreatedAt time.Time
 }
 
 type throttle struct {
-	failures    int
-	lastFailure time.Time
+	Failures    int
+	LastFailure time.Time
 }
 
 type tokenHint struct {
@@ -230,6 +242,12 @@ type authorizeRequest struct {
 	consentRequired bool
 }
 
+type signingKey struct {
+	id        string
+	privKey   *rsa.PrivateKey
+	generated bool
+}
+
 type identityProvider struct {
 	issuer              string
 	base                string
@@ -241,16 +259,18 @@ type identityProvider struct {
 	languages           []language
 	defaultLanguage     language
 	editProfile         bool
+	stateFile           string
 	sessionIdleTTL      time.Duration
 	sessionMaxTTL       time.Duration
 	accessTokenTTL      time.Duration
 	refreshTokenIdleTTL time.Duration
 	refreshTokenMaxTTL  time.Duration
-	keyID               string
-	privKey             *rsa.PrivateKey
+	signingKeys         []signingKey
+	generatedKey        []byte
 	csrfKey             []byte
 	clients             map[string]client
 	users               map[string]user
+	userEdits           map[string]userEdit
 	sessions            map[string]session
 	accessTokens        map[string]accessToken
 	refreshTokens       map[string]refreshToken
@@ -258,6 +278,7 @@ type identityProvider struct {
 	pendingTOTPs        map[string]pendingTOTP
 	lastTOTPSteps       map[string]int64
 	throttles           map[string]throttle
+	stateFileData       []byte
 	mu                  sync.Mutex
 }
 
@@ -300,6 +321,7 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 		pageLanguages, defaultLanguage = []language{lang}, lang
 	}
 	editProfile := lookupEnv("SIMPLE_IDP_EDIT_PROFILE") == "true"
+	stateFile := lookupEnv("SIMPLE_IDP_STATE_FILE")
 	sessionIdleTTL, err := envDuration(lookupEnv, "SIMPLE_IDP_SESSION_IDLE_TTL", 30*time.Minute)
 	if err != nil {
 		return "", nil, err
@@ -323,18 +345,50 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 	if err != nil {
 		return "", nil, err
 	}
-	keyID := envOr(lookupEnv, "SIMPLE_IDP_KEY_ID", "simpleidp")
-	privKey, err := loadOrGenerateKey(lookupEnv, readFile)
+
+	var state persistedState
+	if stateFile != "" {
+		if resolved, err := filepath.EvalSymlinks(stateFile); err == nil {
+			stateFile = resolved
+		} else if target, err := os.Readlink(stateFile); err == nil {
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(stateFile), target)
+			}
+			stateFile = target
+		}
+		data, err := readFile(filepath.Clean(stateFile))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", nil, fmt.Errorf("failed to read state file %q: %w", stateFile, err)
+		}
+		if err == nil && len(bytes.TrimSpace(data)) > 0 {
+			if err := json.Unmarshal(data, &state); err != nil {
+				return "", nil, fmt.Errorf("failed to parse state file %q: %w", stateFile, err)
+			}
+			slog.Info("loaded state", "path", stateFile)
+		}
+	}
+
+	signingKeys, err := loadSigningKeys(lookupEnv, readFile, state.SigningKey)
 	if err != nil {
 		return "", nil, err
 	}
-
-	csrfKey := make([]byte, 32)
-	if _, err := rand.Read(csrfKey); err != nil {
-		return "", nil, fmt.Errorf("failed to generate CSRF key: %w", err)
+	generatedKey := state.SigningKey
+	if signingKeys[0].generated {
+		generatedKey, err = x509.MarshalPKCS8PrivateKey(signingKeys[0].privKey)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to encode generated RSA key: %w", err)
+		}
 	}
 
-	return listen, &identityProvider{
+	csrfKey := state.CSRFKey
+	if len(csrfKey) == 0 {
+		csrfKey = make([]byte, 32)
+		if _, err := rand.Read(csrfKey); err != nil {
+			return "", nil, fmt.Errorf("failed to generate CSRF key: %w", err)
+		}
+	}
+
+	provider := &identityProvider{
 		issuer:              issuer,
 		base:                issuerURL.Path,
 		title:               title,
@@ -345,16 +399,18 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 		languages:           pageLanguages,
 		defaultLanguage:     defaultLanguage,
 		editProfile:         editProfile,
+		stateFile:           stateFile,
 		sessionIdleTTL:      sessionIdleTTL,
 		sessionMaxTTL:       sessionMaxTTL,
 		accessTokenTTL:      accessTokenTTL,
 		refreshTokenIdleTTL: refreshTokenIdleTTL,
 		refreshTokenMaxTTL:  refreshTokenMaxTTL,
-		keyID:               keyID,
-		privKey:             privKey,
+		signingKeys:         signingKeys,
+		generatedKey:        generatedKey,
 		csrfKey:             csrfKey,
 		clients:             clients,
 		users:               users,
+		userEdits:           map[string]userEdit{},
 		sessions:            map[string]session{},
 		accessTokens:        map[string]accessToken{},
 		refreshTokens:       map[string]refreshToken{},
@@ -362,7 +418,14 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 		pendingTOTPs:        map[string]pendingTOTP{},
 		lastTOTPSteps:       map[string]int64{},
 		throttles:           map[string]throttle{},
-	}, nil
+	}
+	if err := provider.restoreState(state); err != nil {
+		return "", nil, err
+	}
+	if err := provider.saveState(); err != nil {
+		return "", nil, err
+	}
+	return listen, provider, nil
 }
 
 func newServer(listen string, provider *identityProvider) *http.Server {
@@ -406,6 +469,9 @@ func newServer(listen string, provider *identityProvider) *http.Server {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Pragma", "no-cache")
 		mux.ServeHTTP(w, r)
+		if err := provider.saveState(); err != nil {
+			slog.Error("failed to save state", "error", err)
+		}
 	})
 
 	return &http.Server{
@@ -425,7 +491,7 @@ func (p *identityProvider) handleProfile(w http.ResponseWriter, r *http.Request)
 		http.Redirect(w, r, p.base+"/login", http.StatusFound)
 		return
 	}
-	profileUser, _ := p.lookupUser(currentSession.userLabel)
+	profileUser, _ := p.lookupUser(currentSession.UserLabel)
 	if r.Method != http.MethodPost {
 		p.renderProfilePage(w, r, profileUser, sessionID, msgNone)
 		return
@@ -448,19 +514,18 @@ func (p *identityProvider) handleProfile(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	profileUser.username = r.PostForm.Get("username")
-	profileUser.name = r.PostForm.Get("name")
-	profileUser.email = r.PostForm.Get("email")
+	edit := userEdit{Username: r.PostForm.Get("username"), Name: r.PostForm.Get("name"), Email: r.PostForm.Get("email")}
 	errorMsg := msgNone
 	switch {
-	case profileUser.username == "" || profileUser.name == "":
+	case edit.Username == "" || edit.Name == "":
 		errorMsg = msgUsernameAndNameRequired
-	case !isValidEmail(profileUser.email):
+	case !isValidEmail(edit.Email):
 		errorMsg = msgInvalidEmail
-	case !p.updateUser(profileUser):
+	case !p.updateUser(profileUser.label, edit):
 		errorMsg = msgUsernameTaken
 	}
 	if errorMsg != msgNone {
+		profileUser.username, profileUser.name, profileUser.email = edit.Username, edit.Name, edit.Email
 		p.renderProfilePage(w, r, profileUser, sessionID, errorMsg)
 		return
 	}
@@ -496,7 +561,7 @@ func (p *identityProvider) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	p.issueSession(w, authenticatedUser.label, time.Now(), p.readSession(r))
+	p.issueSession(w, authenticatedUser, time.Now(), p.readSession(r))
 	p.clearPreAuthSession(w)
 	http.Redirect(w, r, p.base+"/", http.StatusSeeOther)
 }
@@ -649,10 +714,10 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 			delete(p.pendingCodes, code)
 			codeKnown = false
 		}
-		if !sessionKnown || p.isSessionExpired(currentSession, now) || pendingCode.sessionID != sessionID {
+		if !sessionKnown || p.isSessionExpired(currentSession, now) || pendingCode.SessionID != sessionID {
 			codeKnown = false
 		}
-		if codeKnown && (pendingCode.clientID != client.id || pendingCode.redirectURI != params.Get("redirect_uri") || !pendingCode.consumedAt.IsZero() || !pendingCode.consentRequired) {
+		if codeKnown && (pendingCode.ClientID != client.id || pendingCode.RedirectURI != params.Get("redirect_uri") || !pendingCode.ConsumedAt.IsZero() || !pendingCode.ConsentRequired) {
 			codeKnown = false
 		}
 		if codeKnown {
@@ -660,8 +725,8 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 			case "yes":
 				delete(p.pendingCodes, code)
 				code = rand.Text()
-				pendingCode.consentRequired = false
-				pendingCode.createdAt = now
+				pendingCode.ConsentRequired = false
+				pendingCode.CreatedAt = now
 				p.pendingCodes[code] = pendingCode
 			case "no":
 				delete(p.pendingCodes, code)
@@ -677,12 +742,12 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		if confirm == "no" {
-			slog.Info("consent denied", "label", pendingCode.userLabel, "client_id", client.id)
-			redirectWithError(w, r, p.issuer, *redirectURI, pendingCode.state, "access_denied", "End-user denied the request")
+			slog.Info("consent denied", "label", pendingCode.UserLabel, "client_id", client.id)
+			redirectWithError(w, r, p.issuer, *redirectURI, pendingCode.State, "access_denied", "End-user denied the request")
 			return
 		}
-		slog.Info("consent granted", "label", pendingCode.userLabel, "client_id", client.id, "scope", pendingCode.scope)
-		redirectWithCode(w, r, p.issuer, *redirectURI, code, pendingCode.state)
+		slog.Info("consent granted", "label", pendingCode.UserLabel, "client_id", client.id, "scope", pendingCode.Scope)
+		redirectWithCode(w, r, p.issuer, *redirectURI, code, pendingCode.State)
 		return
 	}
 
@@ -734,7 +799,7 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 	if !hasPromptValue(prompt, "login") && !hasPromptValue(prompt, "select_account") {
 		currentSession, sessionKnown = p.resumeSession(sessionID)
 		if sessionKnown && !p.canReuseSession(currentSession, hintedUser, maxAge, maxAgeRequested) {
-			slog.Debug("session not reused", "label", currentSession.userLabel, "client_id", client.id, "sid", sessionID)
+			slog.Debug("session not reused", "label", currentSession.UserLabel, "client_id", client.id, "sid", sessionID)
 			sessionKnown = false
 		}
 	}
@@ -750,15 +815,15 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 			redirectWithError(w, r, p.issuer, *redirectURI, state, "interaction_required", "Public clients require end-user interaction")
 			return
 		}
-		slog.Debug("reusing session", "label", currentSession.userLabel, "client_id", client.id, "sid", sessionID)
-		p.authorizeUser(w, r, authorization, currentSession.userLabel, currentSession.authenticatedAt, sessionID)
+		slog.Debug("reusing session", "label", currentSession.UserLabel, "client_id", client.id, "sid", sessionID)
+		p.authorizeUser(w, r, authorization, sessionID)
 		return
 	}
 
 	if sessionKnown && (r.Method == http.MethodGet || !credentialsSubmitted) {
 		authorization.consentRequired = authorization.consentRequired || client.isPublic
-		slog.Debug("reusing session", "label", currentSession.userLabel, "client_id", client.id, "sid", sessionID)
-		p.authorizeUser(w, r, authorization, currentSession.userLabel, currentSession.authenticatedAt, sessionID)
+		slog.Debug("reusing session", "label", currentSession.UserLabel, "client_id", client.id, "sid", sessionID)
+		p.authorizeUser(w, r, authorization, sessionID)
 		return
 	}
 
@@ -776,9 +841,9 @@ func (p *identityProvider) handleAuthorize(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	authenticatedAt := time.Now()
-	sessionID = p.issueSession(w, authenticatedUser.label, authenticatedAt, sessionID)
+	sessionID = p.issueSession(w, authenticatedUser, authenticatedAt, sessionID)
 	p.clearPreAuthSession(w)
-	p.authorizeUser(w, r, authorization, authenticatedUser.label, authenticatedAt, sessionID)
+	p.authorizeUser(w, r, authorization, sessionID)
 }
 
 func (p *identityProvider) handleToken(w http.ResponseWriter, r *http.Request) {
@@ -860,29 +925,28 @@ func (p *identityProvider) handleUserInfo(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	if !slices.Contains(strings.Fields(bearerToken.scope), "openid") {
+	if !slices.Contains(strings.Fields(bearerToken.Scope), "openid") {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="userinfo", error="insufficient_scope", error_description="The access token does not grant the openid scope", scope="openid"`)
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
-	writeJSON(w, http.StatusOK, p.buildClaimsForScope(user, bearerToken.scope))
+	writeJSON(w, http.StatusOK, p.buildClaimsForScope(user, bearerToken.Scope))
 }
 
 func (p *identityProvider) handleJWKS(w http.ResponseWriter, r *http.Request) {
-	pub := &p.privKey.PublicKey
-	jwks := map[string]any{
-		"keys": []map[string]any{
-			{
-				"kty": "RSA",
-				"alg": "RS256",
-				"use": "sig",
-				"kid": p.keyID,
-				"n":   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
-				"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
-			},
-		},
+	keys := make([]map[string]any, 0, len(p.signingKeys))
+	for _, key := range p.signingKeys {
+		pub := &key.privKey.PublicKey
+		keys = append(keys, map[string]any{
+			"kty": "RSA",
+			"alg": "RS256",
+			"use": "sig",
+			"kid": key.id,
+			"n":   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+			"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+		})
 	}
-	writeJSON(w, http.StatusOK, jwks)
+	writeJSON(w, http.StatusOK, map[string]any{"keys": keys})
 }
 
 func (p *identityProvider) handleIntrospect(w http.ResponseWriter, r *http.Request) {
@@ -927,25 +991,25 @@ func (p *identityProvider) handleIntrospect(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusOK, response)
 	}
 	refreshTokenExpiry := func(token refreshToken) time.Time {
-		idleExpiry := token.createdAt.Add(p.refreshTokenIdleTTL)
-		maxExpiry := token.sessionStartedAt.Add(p.refreshTokenMaxTTL)
+		idleExpiry := token.CreatedAt.Add(p.refreshTokenIdleTTL)
+		maxExpiry := token.SessionStartedAt.Add(p.refreshTokenMaxTTL)
 		if idleExpiry.Before(maxExpiry) {
 			return idleExpiry
 		}
 		return maxExpiry
 	}
 	writeActiveAccessToken := func() bool {
-		if !accessTokenKnown || storedAccessToken.clientID != client.id {
+		if !accessTokenKnown || storedAccessToken.ClientID != client.id {
 			return false
 		}
-		writeActiveResponse(storedAccessToken.userLabel, storedAccessToken.clientID, storedAccessToken.scope, storedAccessToken.expiry, "Bearer")
+		writeActiveResponse(storedAccessToken.UserLabel, storedAccessToken.ClientID, storedAccessToken.Scope, storedAccessToken.Expiry, "Bearer")
 		return true
 	}
 	writeActiveRefreshToken := func() bool {
-		if !refreshTokenKnown || !storedRefreshToken.consumedAt.IsZero() || storedRefreshToken.clientID != client.id {
+		if !refreshTokenKnown || !storedRefreshToken.ConsumedAt.IsZero() || storedRefreshToken.ClientID != client.id {
 			return false
 		}
-		writeActiveResponse(storedRefreshToken.userLabel, storedRefreshToken.clientID, storedRefreshToken.scope, refreshTokenExpiry(storedRefreshToken), "")
+		writeActiveResponse(storedRefreshToken.UserLabel, storedRefreshToken.ClientID, storedRefreshToken.Scope, refreshTokenExpiry(storedRefreshToken), "")
 		return true
 	}
 
@@ -989,7 +1053,7 @@ func (p *identityProvider) handleRevoke(w http.ResponseWriter, r *http.Request) 
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		stored, known := p.accessTokens[token]
-		if !known || stored.clientID != client.id {
+		if !known || stored.ClientID != client.id {
 			return false
 		}
 		delete(p.accessTokens, token)
@@ -999,10 +1063,10 @@ func (p *identityProvider) handleRevoke(w http.ResponseWriter, r *http.Request) 
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		stored, known := p.refreshTokens[token]
-		if !known || stored.clientID != client.id {
+		if !known || stored.ClientID != client.id {
 			return false
 		}
-		p.revokeGrant(stored.code)
+		p.revokeGrant(stored.Code)
 		return true
 	}
 
@@ -1702,6 +1766,7 @@ func (p *identityProvider) resolveIDTokenHint(token string) (tokenHint, bool) {
 	var header struct {
 		Alg string `json:"alg"`
 		Typ string `json:"typ"`
+		Kid string `json:"kid"`
 	}
 	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
@@ -1710,7 +1775,8 @@ func (p *identityProvider) resolveIDTokenHint(token string) (tokenHint, bool) {
 	if err := json.Unmarshal(headerJSON, &header); err != nil {
 		return tokenHint{}, false
 	}
-	if header.Alg != "RS256" || header.Typ != "JWT" {
+	keyIndex := slices.IndexFunc(p.signingKeys, func(key signingKey) bool { return key.id == header.Kid })
+	if header.Alg != "RS256" || header.Typ != "JWT" || keyIndex < 0 {
 		return tokenHint{}, false
 	}
 
@@ -1720,7 +1786,7 @@ func (p *identityProvider) resolveIDTokenHint(token string) (tokenHint, bool) {
 	}
 	signingInput := parts[0] + "." + parts[1]
 	digest := sha256.Sum256([]byte(signingInput))
-	if err := rsa.VerifyPKCS1v15(&p.privKey.PublicKey, crypto.SHA256, digest[:], signature); err != nil {
+	if err := rsa.VerifyPKCS1v15(&p.signingKeys[keyIndex].privKey.PublicKey, crypto.SHA256, digest[:], signature); err != nil {
 		return tokenHint{}, false
 	}
 
@@ -1754,7 +1820,7 @@ func (p *identityProvider) resolveIDTokenHint(token string) (tokenHint, bool) {
 	return tokenHint{sub: claims.Sub, aud: aud}, true
 }
 
-func (p *identityProvider) authorizeUser(w http.ResponseWriter, r *http.Request, authorization authorizeRequest, userLabel string, authenticatedAt time.Time, sessionID string) {
+func (p *identityProvider) authorizeUser(w http.ResponseWriter, r *http.Request, authorization authorizeRequest, sessionID string) {
 	issuedCode := rand.Text()
 
 	p.mu.Lock()
@@ -1766,27 +1832,28 @@ func (p *identityProvider) authorizeUser(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	p.pendingCodes[issuedCode] = pendingCode{
-		clientID:        authorization.client.id,
-		userLabel:       userLabel,
-		redirectURI:     authorization.params.Get("redirect_uri"),
-		codeChallenge:   authorization.codeChallenge,
-		nonce:           authorization.nonce,
-		state:           authorization.state,
-		scope:           authorization.scope,
-		sessionID:       sessionID,
-		consentRequired: authorization.consentRequired,
-		authenticatedAt: authenticatedAt,
-		createdAt:       time.Now(),
+		ClientID:        authorization.client.id,
+		UserLabel:       currentSession.UserLabel,
+		RedirectURI:     authorization.params.Get("redirect_uri"),
+		CodeChallenge:   authorization.codeChallenge,
+		Nonce:           authorization.nonce,
+		State:           authorization.state,
+		Scope:           authorization.scope,
+		SessionID:       sessionID,
+		ConsentRequired: authorization.consentRequired,
+		AuthenticatedAt: currentSession.AuthenticatedAt,
+		AMR:             currentSession.AMR,
+		CreatedAt:       time.Now(),
 	}
 	p.removeExpiredState()
 	p.mu.Unlock()
 
 	if authorization.consentRequired {
-		slog.Debug("consent required", "label", userLabel, "client_id", authorization.client.id, "scope", authorization.scope)
+		slog.Debug("consent required", "label", currentSession.UserLabel, "client_id", authorization.client.id, "scope", authorization.scope)
 		p.renderConsentForm(w, r, authorization, issuedCode, sessionID)
 		return
 	}
-	slog.Info("authorization code issued", "label", userLabel, "client_id", authorization.client.id, "scope", authorization.scope)
+	slog.Info("authorization code issued", "label", currentSession.UserLabel, "client_id", authorization.client.id, "scope", authorization.scope)
 	redirectWithCode(w, r, p.issuer, authorization.redirectURI, issuedCode, authorization.state)
 }
 
@@ -1802,8 +1869,8 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 	p.mu.Lock()
 	pendingCode, codeKnown := p.pendingCodes[code]
 	codeExpired := codeKnown && p.isPendingCodeExpired(pendingCode, time.Now())
-	codePendingConsent := codeKnown && pendingCode.consentRequired
-	codeReused := codeKnown && !pendingCode.consumedAt.IsZero()
+	codePendingConsent := codeKnown && pendingCode.ConsentRequired
+	codeReused := codeKnown && !pendingCode.ConsumedAt.IsZero()
 	if codeExpired {
 		delete(p.pendingCodes, code)
 	}
@@ -1814,12 +1881,12 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 		return
 	}
 
-	if pendingCode.clientID != client.id {
+	if pendingCode.ClientID != client.id {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "Authorization code was issued to a different client")
 		return
 	}
 
-	if redirectURI != "" && redirectURI != pendingCode.redirectURI {
+	if redirectURI != "" && redirectURI != pendingCode.RedirectURI {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "Redirect URI does not match the one used in the authorization request")
 		return
 	}
@@ -1834,7 +1901,7 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 	}
 	verifierHash := sha256.Sum256([]byte(codeVerifier))
 	expectedChallenge := base64.RawURLEncoding.EncodeToString(verifierHash[:])
-	if subtle.ConstantTimeCompare([]byte(expectedChallenge), []byte(pendingCode.codeChallenge)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(expectedChallenge), []byte(pendingCode.CodeChallenge)) != 1 {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "Code verifier does not match code challenge")
 		return
 	}
@@ -1847,9 +1914,9 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 		return
 	}
 
-	user, _ := p.lookupUser(pendingCode.userLabel)
+	user, _ := p.lookupUser(pendingCode.UserLabel)
 	issuedAt := time.Now()
-	accessTokenValue, err := p.mintAccessToken(client, user, pendingCode.scope, issuedAt)
+	accessTokenValue, err := p.mintAccessToken(client, user, pendingCode.Scope, issuedAt)
 	if err != nil {
 		http.Error(w, "Failed to mint access token", http.StatusInternalServerError)
 		return
@@ -1862,35 +1929,36 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 	}
 
 	p.mu.Lock()
-	currentSession, sessionKnown := p.sessions[pendingCode.sessionID]
+	currentSession, sessionKnown := p.sessions[pendingCode.SessionID]
 	sessionKnown = sessionKnown && !p.isSessionExpired(currentSession, time.Now())
-	if latest, ok := p.pendingCodes[code]; !ok || !latest.consumedAt.IsZero() || !sessionKnown {
+	if latest, ok := p.pendingCodes[code]; !ok || !latest.ConsumedAt.IsZero() || !sessionKnown {
 		p.revokeGrant(code)
 		p.mu.Unlock()
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "Invalid, expired, or previously used authorization code")
 		return
 	}
-	pendingCode.consumedAt = time.Now()
+	pendingCode.ConsumedAt = time.Now()
 	p.pendingCodes[code] = pendingCode
 	p.accessTokens[accessTokenValue] = accessToken{
-		clientID:  client.id,
-		userLabel: user.label,
-		scope:     pendingCode.scope,
-		code:      code,
-		sessionID: pendingCode.sessionID,
-		expiry:    issuedAt.Truncate(time.Second).Add(p.accessTokenTTL),
+		ClientID:  client.id,
+		UserLabel: user.label,
+		Scope:     pendingCode.Scope,
+		Code:      code,
+		SessionID: pendingCode.SessionID,
+		Expiry:    issuedAt.Truncate(time.Second).Add(p.accessTokenTTL),
 	}
 	p.refreshTokens[refreshTokenValue] = refreshToken{
-		clientID:         client.id,
-		userLabel:        user.label,
-		scope:            pendingCode.scope,
-		code:             code,
-		sessionID:        pendingCode.sessionID,
-		authenticatedAt:  pendingCode.authenticatedAt,
-		sessionStartedAt: issuedAt,
-		createdAt:        issuedAt,
+		ClientID:         client.id,
+		UserLabel:        user.label,
+		Scope:            pendingCode.Scope,
+		Code:             code,
+		SessionID:        pendingCode.SessionID,
+		AuthenticatedAt:  pendingCode.AuthenticatedAt,
+		AMR:              pendingCode.AMR,
+		SessionStartedAt: issuedAt,
+		CreatedAt:        issuedAt,
 	}
-	currentSession.clientIDs[client.id] = struct{}{}
+	currentSession.ClientIDs[client.id] = struct{}{}
 	p.removeExpiredState()
 	p.mu.Unlock()
 
@@ -1898,7 +1966,7 @@ func (p *identityProvider) exchangeAuthorizationCode(w http.ResponseWriter, r *h
 		"access_token":  accessTokenValue,
 		"token_type":    "Bearer",
 		"expires_in":    int(p.accessTokenTTL.Seconds()),
-		"scope":         pendingCode.scope,
+		"scope":         pendingCode.Scope,
 		"id_token":      idToken,
 		"refresh_token": refreshTokenValue,
 	}
@@ -1914,7 +1982,7 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 
 	p.mu.Lock()
 	storedRefreshToken, tokenKnown := p.refreshTokens[refreshTokenValue]
-	tokenReused := tokenKnown && !storedRefreshToken.consumedAt.IsZero()
+	tokenReused := tokenKnown && !storedRefreshToken.ConsumedAt.IsZero()
 	tokenExpired := tokenKnown && !tokenReused && p.isRefreshTokenExpired(storedRefreshToken, time.Now())
 	if tokenExpired {
 		delete(p.refreshTokens, refreshTokenValue)
@@ -1925,11 +1993,11 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "Invalid or expired refresh token")
 		return
 	}
-	if storedRefreshToken.clientID != client.id {
+	if storedRefreshToken.ClientID != client.id {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "Refresh token was issued to a different client")
 		return
 	}
-	effectiveAccessScope, ok := validateRefreshScope(r.PostForm.Get("scope"), storedRefreshToken.scope)
+	effectiveAccessScope, ok := validateRefreshScope(r.PostForm.Get("scope"), storedRefreshToken.Scope)
 	if !ok {
 		writeTokenError(w, http.StatusBadRequest, "invalid_scope", "Requested scope exceeds the original grant")
 		return
@@ -1937,13 +2005,13 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 
 	if tokenReused {
 		p.mu.Lock()
-		p.revokeGrant(storedRefreshToken.code)
+		p.revokeGrant(storedRefreshToken.Code)
 		p.mu.Unlock()
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "Invalid or expired refresh token")
 		return
 	}
 
-	user, _ := p.lookupUser(storedRefreshToken.userLabel)
+	user, _ := p.lookupUser(storedRefreshToken.UserLabel)
 	issuedAt := time.Now()
 	newAccessTokenValue, err := p.mintAccessToken(client, user, effectiveAccessScope, issuedAt)
 	if err != nil {
@@ -1955,9 +2023,10 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 	idToken := ""
 	if slices.Contains(strings.Fields(effectiveAccessScope), "openid") {
 		idToken, err = p.mintIDToken(user, client, pendingCode{
-			scope:           effectiveAccessScope,
-			sessionID:       storedRefreshToken.sessionID,
-			authenticatedAt: storedRefreshToken.authenticatedAt,
+			Scope:           effectiveAccessScope,
+			SessionID:       storedRefreshToken.SessionID,
+			AuthenticatedAt: storedRefreshToken.AuthenticatedAt,
+			AMR:             storedRefreshToken.AMR,
 		}, newAccessTokenValue, issuedAt)
 		if err != nil {
 			http.Error(w, "Failed to mint ID token", http.StatusInternalServerError)
@@ -1966,31 +2035,32 @@ func (p *identityProvider) exchangeRefreshToken(w http.ResponseWriter, r *http.R
 	}
 
 	p.mu.Lock()
-	if latest, ok := p.refreshTokens[refreshTokenValue]; !ok || !latest.consumedAt.IsZero() {
-		p.revokeGrant(storedRefreshToken.code)
+	if latest, ok := p.refreshTokens[refreshTokenValue]; !ok || !latest.ConsumedAt.IsZero() {
+		p.revokeGrant(storedRefreshToken.Code)
 		p.mu.Unlock()
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "Invalid or expired refresh token")
 		return
 	}
-	storedRefreshToken.consumedAt = time.Now()
+	storedRefreshToken.ConsumedAt = time.Now()
 	p.refreshTokens[refreshTokenValue] = storedRefreshToken
 	p.accessTokens[newAccessTokenValue] = accessToken{
-		clientID:  client.id,
-		userLabel: user.label,
-		scope:     effectiveAccessScope,
-		code:      storedRefreshToken.code,
-		sessionID: storedRefreshToken.sessionID,
-		expiry:    issuedAt.Truncate(time.Second).Add(p.accessTokenTTL),
+		ClientID:  client.id,
+		UserLabel: user.label,
+		Scope:     effectiveAccessScope,
+		Code:      storedRefreshToken.Code,
+		SessionID: storedRefreshToken.SessionID,
+		Expiry:    issuedAt.Truncate(time.Second).Add(p.accessTokenTTL),
 	}
 	p.refreshTokens[newRefreshTokenValue] = refreshToken{
-		clientID:         client.id,
-		userLabel:        storedRefreshToken.userLabel,
-		scope:            storedRefreshToken.scope,
-		code:             storedRefreshToken.code,
-		sessionID:        storedRefreshToken.sessionID,
-		authenticatedAt:  storedRefreshToken.authenticatedAt,
-		sessionStartedAt: storedRefreshToken.sessionStartedAt,
-		createdAt:        issuedAt,
+		ClientID:         client.id,
+		UserLabel:        storedRefreshToken.UserLabel,
+		Scope:            storedRefreshToken.Scope,
+		Code:             storedRefreshToken.Code,
+		SessionID:        storedRefreshToken.SessionID,
+		AuthenticatedAt:  storedRefreshToken.AuthenticatedAt,
+		AMR:              storedRefreshToken.AMR,
+		SessionStartedAt: storedRefreshToken.SessionStartedAt,
+		CreatedAt:        issuedAt,
 	}
 	p.removeExpiredState()
 	p.mu.Unlock()
@@ -2032,9 +2102,9 @@ func (p *identityProvider) exchangeClientCredentials(w http.ResponseWriter, r *h
 
 	p.mu.Lock()
 	p.accessTokens[accessTokenValue] = accessToken{
-		clientID: client.id,
-		scope:    scope,
-		expiry:   issuedAt.Truncate(time.Second).Add(p.accessTokenTTL),
+		ClientID: client.id,
+		Scope:    scope,
+		Expiry:   issuedAt.Truncate(time.Second).Add(p.accessTokenTTL),
 	}
 	p.removeExpiredState()
 	p.mu.Unlock()
@@ -2114,7 +2184,11 @@ func (p *identityProvider) readSession(r *http.Request) string {
 	return p.sessionIDFromCookie(p.readCookie(r, sessionCookieBaseName))
 }
 
-func (p *identityProvider) issueSession(w http.ResponseWriter, userLabel string, authenticatedAt time.Time, sessionID string) string {
+func (p *identityProvider) issueSession(w http.ResponseWriter, authenticatedUser user, authenticatedAt time.Time, sessionID string) string {
+	amr := []string{"pwd"}
+	if authenticatedUser.totpSecret != nil {
+		amr = append(amr, "otp", "mfa")
+	}
 	cookie := p.newCookie(sessionCookieBaseName) // #nosec G124
 	cookie.Value = rand.Text()
 	cookieDigest := sha256.Sum256([]byte(cookie.Value))
@@ -2122,14 +2196,15 @@ func (p *identityProvider) issueSession(w http.ResponseWriter, userLabel string,
 	if sessionID != "" {
 		p.mu.Lock()
 		currentSession, sessionKnown := p.sessions[sessionID]
-		if sessionKnown && currentSession.userLabel == userLabel && !p.isSessionExpired(currentSession, authenticatedAt) {
-			currentSession.cookieDigest = cookieDigest
-			currentSession.authenticatedAt = authenticatedAt
-			currentSession.lastSeenAt = authenticatedAt
+		if sessionKnown && currentSession.UserLabel == authenticatedUser.label && !p.isSessionExpired(currentSession, authenticatedAt) {
+			currentSession.CookieDigest = cookieDigest
+			currentSession.AuthenticatedAt = authenticatedAt
+			currentSession.AMR = amr
+			currentSession.LastSeenAt = authenticatedAt
 			p.sessions[sessionID] = currentSession
 			p.mu.Unlock()
 			http.SetCookie(w, cookie)
-			slog.Info("user signed in", "label", userLabel, "sid", sessionID)
+			slog.Info("user signed in", "label", authenticatedUser.label, "sid", sessionID)
 			return sessionID
 		}
 		p.mu.Unlock()
@@ -2139,16 +2214,17 @@ func (p *identityProvider) issueSession(w http.ResponseWriter, userLabel string,
 	sessionID = rand.Text()
 	p.mu.Lock()
 	p.sessions[sessionID] = session{
-		userLabel:       userLabel,
-		cookieDigest:    cookieDigest,
-		clientIDs:       map[string]struct{}{},
-		authenticatedAt: authenticatedAt,
-		lastSeenAt:      authenticatedAt,
+		UserLabel:       authenticatedUser.label,
+		CookieDigest:    cookieDigest,
+		ClientIDs:       map[string]struct{}{},
+		AuthenticatedAt: authenticatedAt,
+		AMR:             amr,
+		LastSeenAt:      authenticatedAt,
 	}
 	p.removeExpiredState()
 	p.mu.Unlock()
 	http.SetCookie(w, cookie)
-	slog.Info("user signed in", "label", userLabel, "sid", sessionID)
+	slog.Info("user signed in", "label", authenticatedUser.label, "sid", sessionID)
 	return sessionID
 }
 
@@ -2157,31 +2233,31 @@ func (p *identityProvider) clearSession(w http.ResponseWriter, sessionID string)
 	currentSession, sessionKnown := p.sessions[sessionID]
 	delete(p.sessions, sessionID)
 	for k, v := range p.pendingCodes {
-		if v.sessionID == sessionID {
+		if v.SessionID == sessionID {
 			delete(p.pendingCodes, k)
 		}
 	}
 	for k, v := range p.accessTokens {
-		if v.sessionID == sessionID {
+		if v.SessionID == sessionID {
 			delete(p.accessTokens, k)
 		}
 	}
 	for k, v := range p.refreshTokens {
-		if v.sessionID == sessionID {
+		if v.SessionID == sessionID {
 			delete(p.refreshTokens, k)
 		}
 	}
 	p.mu.Unlock()
 	if sessionKnown {
-		slog.Info("session ended", "label", currentSession.userLabel, "sid", sessionID)
+		slog.Info("session ended", "label", currentSession.UserLabel, "sid", sessionID)
 	}
 	cookie := p.newCookie(sessionCookieBaseName) // #nosec G124
 	cookie.MaxAge = -1
 	http.SetCookie(w, cookie)
 
-	logoutUser, _ := p.lookupUser(currentSession.userLabel)
+	logoutUser, _ := p.lookupUser(currentSession.UserLabel)
 	var wg sync.WaitGroup
-	for clientID := range currentSession.clientIDs {
+	for clientID := range currentSession.ClientIDs {
 		client, ok := p.clients[clientID]
 		if !ok || client.backchannelLogoutURI.String() == "" {
 			continue
@@ -2204,7 +2280,7 @@ func (p *identityProvider) resumeSession(sessionID string) (session, bool) {
 		ok = false
 	}
 	if ok {
-		currentSession.lastSeenAt = now
+		currentSession.LastSeenAt = now
 		p.sessions[sessionID] = currentSession
 	}
 	p.removeExpiredState()
@@ -2216,14 +2292,14 @@ func (p *identityProvider) resumeSession(sessionID string) (session, bool) {
 }
 
 func (p *identityProvider) canReuseSession(currentSession session, hintedUser tokenHint, maxAge time.Duration, maxAgeRequested bool) bool {
-	currentUser, ok := p.lookupUser(currentSession.userLabel)
+	currentUser, ok := p.lookupUser(currentSession.UserLabel)
 	if !ok {
 		return false
 	}
 	if hintedUser.sub != "" && currentUser.sub != hintedUser.sub {
 		return false
 	}
-	if maxAgeRequested && time.Since(currentSession.authenticatedAt) > maxAge {
+	if maxAgeRequested && time.Since(currentSession.AuthenticatedAt) > maxAge {
 		return false
 	}
 	return true
@@ -2237,7 +2313,7 @@ func (p *identityProvider) sessionIDFromCookie(value string) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for sessionID, currentSession := range p.sessions {
-		if subtle.ConstantTimeCompare(currentSession.cookieDigest[:], digest[:]) == 1 {
+		if subtle.ConstantTimeCompare(currentSession.CookieDigest[:], digest[:]) == 1 {
 			return sessionID
 		}
 	}
@@ -2296,12 +2372,12 @@ func (p *identityProvider) validateCSRFToken(token, ownerID string) bool {
 func (p *identityProvider) revokeGrant(code string) {
 	delete(p.pendingCodes, code)
 	for k, v := range p.accessTokens {
-		if subtle.ConstantTimeCompare([]byte(v.code), []byte(code)) == 1 {
+		if subtle.ConstantTimeCompare([]byte(v.Code), []byte(code)) == 1 {
 			delete(p.accessTokens, k)
 		}
 	}
 	for k, v := range p.refreshTokens {
-		if subtle.ConstantTimeCompare([]byte(v.code), []byte(code)) == 1 {
+		if subtle.ConstantTimeCompare([]byte(v.Code), []byte(code)) == 1 {
 			delete(p.refreshTokens, k)
 		}
 	}
@@ -2310,7 +2386,7 @@ func (p *identityProvider) revokeGrant(code string) {
 func (p *identityProvider) removeExpiredState() {
 	now := time.Now()
 	for k, v := range p.sessions {
-		if now.Sub(v.authenticatedAt) > p.sessionMaxTTL+p.refreshTokenMaxTTL+p.accessTokenTTL {
+		if now.Sub(v.AuthenticatedAt) > p.sessionMaxTTL+p.refreshTokenMaxTTL+p.accessTokenTTL {
 			delete(p.sessions, k)
 		}
 	}
@@ -2320,19 +2396,19 @@ func (p *identityProvider) removeExpiredState() {
 		}
 	}
 	for k, v := range p.pendingTOTPs {
-		if now.Sub(v.createdAt) > loginActionTTL {
+		if now.Sub(v.CreatedAt) > loginActionTTL {
 			delete(p.pendingTOTPs, k)
 		}
 	}
 	for k, v := range p.accessTokens {
-		if now.After(v.expiry) {
+		if now.After(v.Expiry) {
 			delete(p.accessTokens, k)
 		}
 	}
 	for k, v := range p.refreshTokens {
 		expired := p.isRefreshTokenExpired(v, now)
-		if !v.consumedAt.IsZero() {
-			expired = now.Sub(v.sessionStartedAt) > p.refreshTokenMaxTTL
+		if !v.ConsumedAt.IsZero() {
+			expired = now.Sub(v.SessionStartedAt) > p.refreshTokenMaxTTL
 		}
 		if expired {
 			delete(p.refreshTokens, k)
@@ -2341,22 +2417,159 @@ func (p *identityProvider) removeExpiredState() {
 }
 
 func (p *identityProvider) isSessionExpired(currentSession session, now time.Time) bool {
-	return now.Sub(currentSession.lastSeenAt) > p.sessionIdleTTL || now.Sub(currentSession.authenticatedAt) > p.sessionMaxTTL
+	return now.Sub(currentSession.LastSeenAt) > p.sessionIdleTTL || now.Sub(currentSession.AuthenticatedAt) > p.sessionMaxTTL
 }
 
 func (p *identityProvider) isRefreshTokenExpired(token refreshToken, now time.Time) bool {
-	return now.Sub(token.createdAt) > p.refreshTokenIdleTTL || now.Sub(token.sessionStartedAt) > p.refreshTokenMaxTTL
+	return now.Sub(token.CreatedAt) > p.refreshTokenIdleTTL || now.Sub(token.SessionStartedAt) > p.refreshTokenMaxTTL
 }
 
 func (p *identityProvider) isPendingCodeExpired(code pendingCode, now time.Time) bool {
-	if !code.consumedAt.IsZero() {
-		return now.Sub(code.consumedAt) > p.refreshTokenMaxTTL+p.accessTokenTTL
+	if !code.ConsumedAt.IsZero() {
+		return now.Sub(code.ConsumedAt) > p.refreshTokenMaxTTL+p.accessTokenTTL
 	}
 	ttl := codeTTL
-	if code.consentRequired {
+	if code.ConsentRequired {
 		ttl = loginActionTTL
 	}
-	return now.Sub(code.createdAt) > ttl
+	return now.Sub(code.CreatedAt) > ttl
+}
+
+// -------------------------------------------------------------------------- //
+
+type persistedState struct {
+	Issuer        string
+	Subjects      map[string]string
+	PublicClients map[string]bool
+	CSRFKey       []byte
+	SigningKey    []byte
+	UserEdits     map[string]userEdit
+	Sessions      map[string]session
+	AccessTokens  map[string]accessToken
+	RefreshTokens map[string]refreshToken
+	PendingCodes  map[string]pendingCode
+	PendingTOTPs  map[string]pendingTOTP
+	LastTOTPSteps map[string]int64
+	Throttles     map[string]throttle
+}
+
+func (p *identityProvider) restoreState(state persistedState) error {
+	sameIssuer := state.Issuer == p.issuer
+	isUnchangedUser := func(label string) bool {
+		configuredUser, ok := p.users[label]
+		return ok && configuredUser.sub == state.Subjects[label]
+	}
+	isUnchangedGrant := func(userLabel, clientID string) bool {
+		configuredClient, ok := p.clients[clientID]
+		return sameIssuer && ok && configuredClient.isPublic == state.PublicClients[clientID] && (userLabel == "" || isUnchangedUser(userLabel))
+	}
+	for label, stored := range state.UserEdits {
+		if isUnchangedUser(label) {
+			p.userEdits[label] = stored
+		}
+	}
+	usernames := map[string]struct{}{}
+	for label := range p.users {
+		restoredUser, _ := p.lookupUser(label)
+		if _, dup := usernames[restoredUser.username]; dup {
+			return fmt.Errorf("duplicate username %q after restoring state file %q", restoredUser.username, p.stateFile)
+		}
+		usernames[restoredUser.username] = struct{}{}
+	}
+	for id, stored := range state.Sessions {
+		if sameIssuer && isUnchangedUser(stored.UserLabel) {
+			if stored.ClientIDs == nil {
+				stored.ClientIDs = map[string]struct{}{}
+			}
+			p.sessions[id] = stored
+		}
+	}
+	for token, stored := range state.AccessTokens {
+		if isUnchangedGrant(stored.UserLabel, stored.ClientID) {
+			p.accessTokens[token] = stored
+		}
+	}
+	for token, stored := range state.RefreshTokens {
+		if isUnchangedGrant(stored.UserLabel, stored.ClientID) {
+			p.refreshTokens[token] = stored
+		}
+	}
+	for code, stored := range state.PendingCodes {
+		if isUnchangedGrant(stored.UserLabel, stored.ClientID) {
+			p.pendingCodes[code] = stored
+		}
+	}
+	for id, stored := range state.PendingTOTPs {
+		if isUnchangedUser(stored.UserLabel) && p.users[stored.UserLabel].totpSecret != nil {
+			p.pendingTOTPs[id] = stored
+		}
+	}
+	for label, step := range state.LastTOTPSteps {
+		if isUnchangedUser(label) {
+			p.lastTOTPSteps[label] = step
+		}
+	}
+	for key, stored := range state.Throttles {
+		if _, label, _ := strings.Cut(key, ":"); isUnchangedUser(label) {
+			p.throttles[key] = stored
+		}
+	}
+	return nil
+}
+
+func (p *identityProvider) saveState() error {
+	if p.stateFile == "" {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	state := persistedState{
+		Issuer:        p.issuer,
+		Subjects:      map[string]string{},
+		PublicClients: map[string]bool{},
+		CSRFKey:       p.csrfKey,
+		SigningKey:    p.generatedKey,
+		UserEdits:     p.userEdits,
+		Sessions:      p.sessions,
+		AccessTokens:  p.accessTokens,
+		RefreshTokens: p.refreshTokens,
+		PendingCodes:  p.pendingCodes,
+		PendingTOTPs:  p.pendingTOTPs,
+		LastTOTPSteps: p.lastTOTPSteps,
+		Throttles:     p.throttles,
+	}
+	for label, configuredUser := range p.users {
+		state.Subjects[label] = configuredUser.sub
+	}
+	for id, configuredClient := range p.clients {
+		state.PublicClients[id] = configuredClient.isPublic
+	}
+	data, err := json.Marshal(state, json.Deterministic(true), json.OmitZeroStructFields(true))
+	if err != nil {
+		return fmt.Errorf("failed to encode state: %w", err)
+	}
+	if bytes.Equal(data, p.stateFileData) {
+		return nil
+	}
+
+	file, err := os.CreateTemp(filepath.Dir(p.stateFile), filepath.Base(p.stateFile)+".*")
+	if err != nil {
+		return fmt.Errorf("failed to write state file %q: %w", p.stateFile, err)
+	}
+	_, err = file.Write(data)
+	if err = errors.Join(err, file.Sync(), file.Close()); err == nil {
+		err = os.Rename(file.Name(), p.stateFile)
+	}
+	if err != nil {
+		_ = os.Remove(file.Name())
+		return fmt.Errorf("failed to write state file %q: %w", p.stateFile, err)
+	}
+	if dir, err := os.Open(filepath.Dir(p.stateFile)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	p.stateFileData = data
+	return nil
 }
 
 // -------------------------------------------------------------------------- //
@@ -2365,18 +2578,21 @@ func (p *identityProvider) lookupUser(label string) (user, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	currentUser, ok := p.users[label]
+	if edit, edited := p.userEdits[label]; edited {
+		currentUser.username, currentUser.name, currentUser.email = edit.Username, edit.Name, edit.Email
+	}
 	return currentUser, ok
 }
 
-func (p *identityProvider) updateUser(updatedUser user) bool {
+func (p *identityProvider) updateUser(label string, edit userEdit) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for label, otherUser := range p.users {
-		if label != updatedUser.label && otherUser.username == updatedUser.username {
+	for otherLabel, otherUser := range p.users {
+		if otherLabel != label && cmp.Or(p.userEdits[otherLabel].Username, otherUser.username) == edit.Username {
 			return false
 		}
 	}
-	p.users[updatedUser.label] = updatedUser
+	p.userEdits[label] = edit
 	return true
 }
 
@@ -2407,17 +2623,17 @@ func (p *identityProvider) authenticateLogin(w http.ResponseWriter, r *http.Requ
 		p.removeExpiredState()
 		var pendingIDs []string
 		for id, pending := range p.pendingTOTPs {
-			if pending.userLabel == authenticatedUser.label {
+			if pending.UserLabel == authenticatedUser.label {
 				pendingIDs = append(pendingIDs, id)
 			}
 		}
 		if len(pendingIDs) >= maxPendingTOTPsPerUser {
 			delete(p.pendingTOTPs, slices.MinFunc(pendingIDs, func(a, b string) int {
-				return p.pendingTOTPs[a].createdAt.Compare(p.pendingTOTPs[b].createdAt)
+				return p.pendingTOTPs[a].CreatedAt.Compare(p.pendingTOTPs[b].CreatedAt)
 			}))
 		}
 		preAuthID = rand.Text()
-		p.pendingTOTPs[preAuthID] = pendingTOTP{userLabel: authenticatedUser.label, createdAt: time.Now()}
+		p.pendingTOTPs[preAuthID] = pendingTOTP{UserLabel: authenticatedUser.label, CreatedAt: time.Now()}
 		p.mu.Unlock()
 		slog.Debug("authentication code required", "label", authenticatedUser.label)
 		p.renderTOTPForm(w, r, action, params, preAuthID, msgNone)
@@ -2430,7 +2646,7 @@ func (p *identityProvider) authenticateEndUser(username, password string) (user,
 	p.mu.Lock()
 	now := time.Now()
 	for _, candidate := range p.users {
-		if candidate.username != username {
+		if cmp.Or(p.userEdits[candidate.label].Username, candidate.username) != username {
 			continue
 		}
 		throttleKey := "password:" + candidate.label
@@ -2441,7 +2657,7 @@ func (p *identityProvider) authenticateEndUser(username, password string) (user,
 		}
 		if subtle.ConstantTimeCompare([]byte(password), []byte(candidate.password)) != 1 {
 			p.recordFailedAttempt(throttleKey, now)
-			failures := p.throttles[throttleKey].failures
+			failures := p.throttles[throttleKey].Failures
 			p.mu.Unlock()
 			slog.Warn("password rejected", "username", logValue(username), "reason", "wrong password", "failures", failures)
 			return user{}, msgInvalidCredentials
@@ -2449,7 +2665,8 @@ func (p *identityProvider) authenticateEndUser(username, password string) (user,
 		delete(p.throttles, throttleKey)
 		p.mu.Unlock()
 		slog.Info("password accepted", "label", candidate.label, "username", logValue(username))
-		return candidate, msgNone
+		authenticatedUser, _ := p.lookupUser(candidate.label)
+		return authenticatedUser, msgNone
 	}
 	p.mu.Unlock()
 	slog.Warn("password rejected", "username", logValue(username), "reason", "unknown username")
@@ -2465,30 +2682,30 @@ func (p *identityProvider) authenticateTOTP(preAuthID, code string) (user, messa
 		slog.Warn("authentication code rejected", "reason", "no pending authentication step")
 		return user{}, msgSignInAgain, false
 	}
-	if now.Sub(pending.createdAt) > loginActionTTL {
+	if now.Sub(pending.CreatedAt) > loginActionTTL {
 		delete(p.pendingTOTPs, preAuthID)
 		p.mu.Unlock()
-		slog.Warn("authentication code rejected", "label", pending.userLabel, "reason", "authentication step expired")
+		slog.Warn("authentication code rejected", "label", pending.UserLabel, "reason", "authentication step expired")
 		return user{}, msgSignInAgain, false
 	}
-	throttleKey := "totp:" + pending.userLabel
+	throttleKey := "totp:" + pending.UserLabel
 	if wait := p.throttleWait(throttleKey, throttle2FAMaxDelay, now); wait > 0 {
 		p.mu.Unlock()
-		slog.Warn("authentication code attempt throttled", "label", pending.userLabel, "retry_after", wait.Round(time.Millisecond).String())
+		slog.Warn("authentication code attempt throttled", "label", pending.UserLabel, "retry_after", wait.Round(time.Millisecond).String())
 		return user{}, msgTooManyAttempts, true
 	}
-	if !p.validateTOTP(pending.userLabel, code, now) {
+	if !p.validateTOTP(pending.UserLabel, code, now) {
 		p.recordFailedAttempt(throttleKey, now)
-		failures := p.throttles[throttleKey].failures
+		failures := p.throttles[throttleKey].Failures
 		p.mu.Unlock()
-		slog.Warn("authentication code rejected", "label", pending.userLabel, "reason", "invalid, expired, or reused code", "failures", failures)
+		slog.Warn("authentication code rejected", "label", pending.UserLabel, "reason", "invalid, expired, or reused code", "failures", failures)
 		return user{}, msgInvalidAuthenticationCode, true
 	}
 	delete(p.pendingTOTPs, preAuthID)
 	delete(p.throttles, throttleKey)
-	authenticatedUser := p.users[pending.userLabel]
 	p.mu.Unlock()
-	slog.Info("authentication code accepted", "label", pending.userLabel)
+	slog.Info("authentication code accepted", "label", pending.UserLabel)
+	authenticatedUser, _ := p.lookupUser(pending.UserLabel)
 	return authenticatedUser, msgNone, true
 }
 
@@ -2585,19 +2802,19 @@ func (p *identityProvider) registeredOrigin(r *http.Request) string {
 
 func (p *identityProvider) throttleWait(key string, maxDelay time.Duration, now time.Time) time.Duration {
 	attempts := p.throttles[key]
-	if attempts.failures < throttleFreeFailures {
+	if attempts.Failures < throttleFreeFailures {
 		return 0
 	}
-	delay := min(maxDelay, throttleBaseDelay<<min(attempts.failures-throttleFreeFailures, 20))
-	return max(0, attempts.lastFailure.Add(delay).Sub(now))
+	delay := min(maxDelay, throttleBaseDelay<<min(attempts.Failures-throttleFreeFailures, 20))
+	return max(0, attempts.LastFailure.Add(delay).Sub(now))
 }
 
 func (p *identityProvider) recordFailedAttempt(key string, now time.Time) {
 	attempts := p.throttles[key]
-	if now.Sub(attempts.lastFailure) > throttleTTL {
-		attempts.failures = 0
+	if now.Sub(attempts.LastFailure) > throttleTTL {
+		attempts.Failures = 0
 	}
-	p.throttles[key] = throttle{failures: attempts.failures + 1, lastFailure: now}
+	p.throttles[key] = throttle{Failures: attempts.Failures + 1, LastFailure: now}
 }
 
 func (p *identityProvider) resolveBearerToken(token string) (user, accessToken, bool) {
@@ -2605,11 +2822,11 @@ func (p *identityProvider) resolveBearerToken(token string) (user, accessToken, 
 	storedAccessToken, tokenKnown := p.accessTokens[token]
 	p.mu.Unlock()
 
-	if !tokenKnown || time.Now().After(storedAccessToken.expiry) {
+	if !tokenKnown || time.Now().After(storedAccessToken.Expiry) {
 		return user{}, accessToken{}, false
 	}
 
-	currentUser, _ := p.lookupUser(storedAccessToken.userLabel)
+	currentUser, _ := p.lookupUser(storedAccessToken.UserLabel)
 	return currentUser, storedAccessToken, true
 }
 
@@ -2637,27 +2854,23 @@ func (p *identityProvider) mintAccessToken(client client, user user, scope strin
 
 func (p *identityProvider) mintIDToken(user user, client client, code pendingCode, accessToken string, issuedAt time.Time) (string, error) {
 	atHash := sha256.Sum256([]byte(accessToken))
-	amr := []string{"pwd"}
-	if user.totpSecret != nil {
-		amr = append(amr, "otp", "mfa")
-	}
 	payload := map[string]any{
 		"iss":       p.issuer,
 		"sub":       user.sub,
 		"aud":       client.id,
 		"iat":       issuedAt.Unix(),
 		"exp":       issuedAt.Add(p.accessTokenTTL).Unix(),
-		"auth_time": code.authenticatedAt.Unix(),
-		"amr":       amr,
+		"auth_time": code.AuthenticatedAt.Unix(),
+		"amr":       code.AMR,
 		"at_hash":   base64.RawURLEncoding.EncodeToString(atHash[:len(atHash)/2]),
 	}
-	if code.nonce != "" {
-		payload["nonce"] = code.nonce
+	if code.Nonce != "" {
+		payload["nonce"] = code.Nonce
 	}
-	if code.sessionID != "" {
-		payload["sid"] = code.sessionID
+	if code.SessionID != "" {
+		payload["sid"] = code.SessionID
 	}
-	for claim, value := range p.buildClaimsForScope(user, code.scope) {
+	for claim, value := range p.buildClaimsForScope(user, code.Scope) {
 		if claim != "sub" {
 			payload[claim] = value
 		}
@@ -2691,10 +2904,11 @@ func (p *identityProvider) mintLogoutToken(user user, client client, sessionID s
 }
 
 func (p *identityProvider) signJWT(typ string, payload map[string]any) (string, error) {
+	key := p.signingKeys[0]
 	header := map[string]string{
 		"alg": "RS256",
 		"typ": typ,
-		"kid": p.keyID,
+		"kid": key.id,
 	}
 
 	headerJSON, err := json.Marshal(header)
@@ -2711,7 +2925,7 @@ func (p *identityProvider) signJWT(typ string, payload map[string]any) (string, 
 
 	signingInput := headerB64 + "." + payloadB64
 	digest := sha256.Sum256([]byte(signingInput))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, p.privKey, crypto.SHA256, digest[:])
+	signature, err := rsa.SignPKCS1v15(rand.Reader, key.privKey, crypto.SHA256, digest[:])
 	if err != nil {
 		return "", err
 	}
@@ -2925,6 +3139,9 @@ func validateAuthorizeParams(params url.Values) (errorCode, errorDesc string) {
 	}
 	if params.Get("code_challenge_method") != "S256" {
 		return "invalid_request", "Only S256 code challenge method is supported"
+	}
+	if !utf8.ValidString(params.Get("state")) {
+		return "invalid_request", "Invalid state"
 	}
 	if !utf8.ValidString(params.Get("nonce")) {
 		return "invalid_request", "Invalid nonce"
@@ -3381,33 +3598,87 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 	return users, nil
 }
 
-func loadOrGenerateKey(lookupEnv func(string) string, readFile func(string) ([]byte, error)) (*rsa.PrivateKey, error) {
-	if b64 := lookupEnv("SIMPLE_IDP_KEY_B64"); b64 != "" {
-		der, err := base64.StdEncoding.DecodeString(b64)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode SIMPLE_IDP_KEY_B64: %w", err)
+func loadSigningKeys(lookupEnv func(string) string, readFile func(string) ([]byte, error), persistedKey []byte) ([]signingKey, error) {
+	var privKeys []*rsa.PrivateKey
+	generated := false
+	if encodedKeys := envSplit(lookupEnv, "SIMPLE_IDP_KEY_B64", ","); encodedKeys != nil {
+		for _, encoded := range encodedKeys {
+			der, err := base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode SIMPLE_IDP_KEY_B64: %w", err)
+			}
+			key, err := parseRSAPKCS8(der, "SIMPLE_IDP_KEY_B64")
+			if err != nil {
+				return nil, err
+			}
+			privKeys = append(privKeys, key)
 		}
-		return parseRSAPKCS8(der, "SIMPLE_IDP_KEY_B64")
-	}
-
-	if path := lookupEnv("SIMPLE_IDP_KEY_FILE"); path != "" {
+	} else if path := lookupEnv("SIMPLE_IDP_KEY_FILE"); path != "" {
 		data, err := readFile(filepath.Clean(path))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read key file %q: %w", path, err)
 		}
-		block, _ := pem.Decode(data)
-		if block == nil {
-			return nil, fmt.Errorf("no PEM block found in key file %q", path)
+		blocks := 0
+		for block, rest := pem.Decode(data); block != nil; block, rest = pem.Decode(rest) {
+			blocks++
+			if !strings.HasSuffix(block.Type, "PRIVATE KEY") {
+				continue
+			}
+			key, err := parseRSAPKCS8(block.Bytes, path)
+			if err != nil {
+				return nil, err
+			}
+			privKeys = append(privKeys, key)
 		}
-		return parseRSAPKCS8(block.Bytes, path)
+		if blocks != bytes.Count(data, []byte("-----BEGIN ")) {
+			return nil, fmt.Errorf("invalid PEM block in key file %q", path)
+		}
+		if len(privKeys) == 0 {
+			return nil, fmt.Errorf("no private key found in key file %q", path)
+		}
+	} else if len(persistedKey) > 0 {
+		key, err := parseRSAPKCS8(persistedKey, "SIMPLE_IDP_STATE_FILE")
+		if err != nil {
+			return nil, err
+		}
+		privKeys = append(privKeys, key)
+	} else {
+		key, err := rsa.GenerateKey(rand.Reader, 3072)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate RSA key: %w", err)
+		}
+		slog.Info("generated RSA key")
+		privKeys = append(privKeys, key)
+		generated = true
 	}
 
-	key, err := rsa.GenerateKey(rand.Reader, 3072)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate RSA key: %w", err)
+	configuredKeyIDs := envSplit(lookupEnv, "SIMPLE_IDP_KEY_ID", ",")
+	if configuredKeyIDs != nil && len(configuredKeyIDs) != len(privKeys) {
+		return nil, errors.New("SIMPLE_IDP_KEY_ID: must list a unique key ID for each key")
 	}
-	slog.Info("generated ephemeral RSA key")
-	return key, nil
+	thumbprints := map[string]struct{}{}
+	keyIDs := map[string]struct{}{}
+	keys := make([]signingKey, len(privKeys))
+	for i, privKey := range privKeys {
+		n := base64.RawURLEncoding.EncodeToString(privKey.N.Bytes())
+		e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privKey.E)).Bytes())
+		sum := sha256.Sum256(fmt.Appendf(nil, `{"e":%q,"kty":"RSA","n":%q}`, e, n))
+		thumbprint := base64.RawURLEncoding.EncodeToString(sum[:])
+		if _, dup := thumbprints[thumbprint]; dup {
+			return nil, fmt.Errorf("duplicate signing key %q", thumbprint)
+		}
+		thumbprints[thumbprint] = struct{}{}
+		keyID := thumbprint
+		if configuredKeyIDs != nil {
+			keyID = configuredKeyIDs[i]
+		}
+		if _, dup := keyIDs[keyID]; dup || keyID == "" {
+			return nil, errors.New("SIMPLE_IDP_KEY_ID: must list a unique key ID for each key")
+		}
+		keyIDs[keyID] = struct{}{}
+		keys[i] = signingKey{id: keyID, privKey: privKey, generated: generated}
+	}
+	return keys, nil
 }
 
 func parseRSAPKCS8(der []byte, source string) (*rsa.PrivateKey, error) {
@@ -3444,10 +3715,15 @@ func envRequired(lookupEnv func(string) string, name string) (string, error) {
 }
 
 func envSplit(lookupEnv func(string) string, name, sep string) []string {
-	if v := lookupEnv(name); v != "" {
-		return strings.Split(v, sep)
+	v := strings.TrimSpace(lookupEnv(name))
+	if v == "" {
+		return nil
 	}
-	return nil
+	values := strings.Split(v, sep)
+	for i, value := range values {
+		values[i] = strings.TrimSpace(value)
+	}
+	return values
 }
 
 func envDuration(lookupEnv func(string) string, name string, fallback time.Duration) (time.Duration, error) {

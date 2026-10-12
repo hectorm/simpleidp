@@ -398,6 +398,15 @@ func testAuthenticationRequestValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects state values that are not valid UTF-8", func(t *testing.T) {
+		request := newDefaultConfidentialAuthorizationRequest("invalid-utf8-state")
+		request.State = "\xff"
+		redirect := expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, authorizeParams(request)), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "invalid_request")
+		if got := redirect.Query().Get("error_description"); !strings.Contains(got, "state") {
+			t.Fatalf("expected state error, got %q", got)
+		}
+	})
+
 	t.Run("rejects unsupported request objects", func(t *testing.T) {
 		request := newDefaultConfidentialAuthorizationRequest("unsupported-request-object")
 		params := authorizeParams(request)

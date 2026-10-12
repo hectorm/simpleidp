@@ -24,6 +24,7 @@ RUN test -z "$(readelf -x .interp ./simpleidp 2>/dev/null)"
 WORKDIR /rootfs/
 RUN install -DTm 0555 /src/simpleidp ./simpleidp
 RUN install -DTm 0644 /etc/ssl/certs/ca-certificates.crt ./etc/ssl/certs/ca-certificates.crt
+RUN install -dm 0700 -o 18227 -g 18227 ./var/lib/simpleidp/
 RUN mkdir -m 1777 ./run/ ./tmp/
 
 ##################################################

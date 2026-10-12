@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testStandardClaims(t *testing.T) {
@@ -183,6 +184,36 @@ func testStandardClaims(t *testing.T) {
 					}
 				}
 			})
+		}
+	})
+
+	t.Run("trims whitespace around the commas of groups and roles", func(t *testing.T) {
+		environ := []string{
+			"SIMPLE_IDP_USER_ALICE_USERNAME=" + testUsername,
+			"SIMPLE_IDP_USER_ALICE_PASSWORD=" + testPassword,
+			"SIMPLE_IDP_USER_ALICE_GROUPS= alpha ,\n beta\n",
+			"SIMPLE_IDP_USER_ALICE_ROLES=reader,\r\n\toperator",
+			"SIMPLE_IDP_USER_BOB_USERNAME=bob",
+			"SIMPLE_IDP_USER_BOB_PASSWORD=" + testPassword,
+			"SIMPLE_IDP_USER_BOB_GROUPS= \n ",
+		}
+		users, err := loadUsers(environ, func(name string) string {
+			for _, item := range environ {
+				key, value, _ := strings.Cut(item, "=")
+				if key == name {
+					return value
+				}
+			}
+			return ""
+		})
+		if err != nil {
+			t.Fatalf("failed to load users: %v", err)
+		}
+		if groups, roles := users["ALICE"].groups, users["ALICE"].roles; !slices.Equal(groups, []string{"alpha", "beta"}) || !slices.Equal(roles, []string{"reader", "operator"}) {
+			t.Fatalf("unexpected groups %q and roles %q", groups, roles)
+		}
+		if groups := users["BOB"].groups; groups != nil {
+			t.Fatalf("expected no groups from a blank list, got %q", groups)
 		}
 	})
 
@@ -877,19 +908,19 @@ func testSigning(t *testing.T) {
 					if source == "KEY_B64" {
 						value = base64.StdEncoding.EncodeToString(der)
 					}
-					loaded, err := loadOrGenerateKey(func(name string) string {
+					loaded, err := loadSigningKeys(func(name string) string {
 						if name == "SIMPLE_IDP_"+source {
 							return value
 						}
 						return ""
 					}, func(string) ([]byte, error) {
 						return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
-					})
+					}, nil)
 					if bits < 2048 {
 						if err == nil || !strings.Contains(err.Error(), "at least 2048 bits") {
 							t.Fatalf("expected minimum key size error, got %v", err)
 						}
-					} else if err != nil || loaded.N.Cmp(key.N) != 0 {
+					} else if err != nil || loaded[0].privKey.N.Cmp(key.N) != 0 {
 						t.Fatalf("failed to load compliant RSA key: %v", err)
 					}
 				})
@@ -898,14 +929,39 @@ func testSigning(t *testing.T) {
 	})
 
 	t.Run("generates a 3072-bit RSA signing key when none is configured", func(t *testing.T) {
-		key, err := loadOrGenerateKey(func(string) string { return "" }, func(name string) ([]byte, error) {
+		keys, err := loadSigningKeys(func(string) string { return "" }, func(name string) ([]byte, error) {
 			return nil, fmt.Errorf("unexpected key file read: %s", name)
-		})
+		}, nil)
 		if err != nil {
 			t.Fatalf("failed to generate RSA key: %v", err)
 		}
-		if bits := key.N.BitLen(); bits != 3072 {
+		if bits := keys[0].privKey.N.BitLen(); bits != 3072 {
 			t.Fatalf("generated key size mismatch: got %d, want %d", bits, 3072)
+		}
+	})
+
+	t.Run("accepts base64 signing keys wrapped across lines", func(t *testing.T) {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatal(err)
+		}
+		der, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wrapped strings.Builder
+		for line := range slices.Chunk([]byte(base64.StdEncoding.EncodeToString(der)), 76) {
+			wrapped.Write(line)
+			wrapped.WriteByte('\n')
+		}
+		loaded, err := loadSigningKeys(func(name string) string {
+			if name == "SIMPLE_IDP_KEY_B64" {
+				return wrapped.String()
+			}
+			return ""
+		}, nil, nil)
+		if err != nil || loaded[0].privKey.N.Cmp(key.N) != 0 {
+			t.Fatalf("failed to load the wrapped base64 signing key: %v", err)
 		}
 	})
 
@@ -921,7 +977,7 @@ func testSigning(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		loaded, err := loadOrGenerateKey(func(name string) string {
+		loaded, err := loadSigningKeys(func(name string) string {
 			switch name {
 			case "SIMPLE_IDP_KEY_B64":
 				return base64.StdEncoding.EncodeToString(ders[0])
@@ -931,8 +987,8 @@ func testSigning(t *testing.T) {
 			return ""
 		}, func(string) ([]byte, error) {
 			return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: ders[1]}), nil
-		})
-		if err != nil || loaded.N.Cmp(keys[0].N) != 0 {
+		}, nil)
+		if err != nil || loaded[0].privKey.N.Cmp(keys[0].N) != 0 {
 			t.Fatalf("expected the base64 signing key to be loaded: %v", err)
 		}
 	})
@@ -958,12 +1014,15 @@ func testSigning(t *testing.T) {
 			{name: "base64 key that is not PKCS8", source: "KEY_B64", value: base64.StdEncoding.EncodeToString(notPKCS8), want: "failed to parse key"},
 			{name: "base64 key that is not RSA", source: "KEY_B64", value: base64.StdEncoding.EncodeToString(ecDER), want: "is not RSA"},
 			{name: "missing key file", source: "KEY_FILE", value: "missing.pem", want: "failed to read key file"},
-			{name: "key file without a PEM block", source: "KEY_FILE", value: "key.pem", file: []byte("not a PEM file"), want: "no PEM block found"},
+			{name: "key file without a PEM block", source: "KEY_FILE", value: "key.pem", file: []byte("not a PEM file"), want: "no private key found"},
+			{name: "key file without a private key", source: "KEY_FILE", value: "key.pem", file: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: notPKCS8}), want: "no private key found"},
+			{name: "key file with an invalid PEM block", source: "KEY_FILE", value: "key.pem", file: slices.Concat(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: notPKCS8}), []byte("-----BEGIN PRIVATE KEY-----\nnot base64!\n-----END PRIVATE KEY-----\n")), want: "invalid PEM block"},
+			{name: "key file with an unsupported private key", source: "KEY_FILE", value: "key.pem", file: pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: notPKCS8}), want: "failed to parse key"},
 			{name: "key file that is not PKCS8", source: "KEY_FILE", value: "key.pem", file: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: notPKCS8}), want: "failed to parse key"},
 			{name: "key file that is not RSA", source: "KEY_FILE", value: "key.pem", file: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: ecDER}), want: "is not RSA"},
 		} {
 			t.Run(testCase.name, func(t *testing.T) {
-				_, err := loadOrGenerateKey(func(name string) string {
+				_, err := loadSigningKeys(func(name string) string {
 					if name == "SIMPLE_IDP_"+testCase.source {
 						return testCase.value
 					}
@@ -973,7 +1032,7 @@ func testSigning(t *testing.T) {
 						return nil, os.ErrNotExist
 					}
 					return testCase.file, nil
-				})
+				}, nil)
 				if err == nil || !strings.Contains(err.Error(), testCase.want) {
 					t.Fatalf("expected error containing %q, got %v", testCase.want, err)
 				}
@@ -981,32 +1040,214 @@ func testSigning(t *testing.T) {
 		}
 	})
 
+	t.Run("derives the default key ID from the RFC 7638 thumbprint", func(t *testing.T) {
+		example := jwk{
+			KeyType: "RSA",
+			N:       "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw",
+			E:       "AQAB",
+		}
+		if got, want := jwkThumbprint(t, example), "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"; got != want {
+			t.Fatalf("RFC 7638 example thumbprint mismatch: got %q, want %q", got, want)
+		}
+		if want := jwkThumbprint(t, jwks.Keys[0]); header.Kid != want {
+			t.Fatalf("default kid mismatch: got %q, want %q", header.Kid, want)
+		}
+	})
+
 	t.Run("publishes the configured key ID", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.KeyID = "signing-key-1"
+		provider := startProvider(t, config)
+		request := newDefaultConfidentialAuthorizationRequest("signing-key-id")
+		token := authorizeAndExchange(t, provider, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+		if jwks := fetchJWKS(t, provider); len(jwks.Keys) != 1 || jwks.Keys[0].KeyID != config.KeyID {
+			t.Fatalf("expected one jwk with kid %q, got %#v", config.KeyID, jwks.Keys)
+		}
+		for _, jwt := range []string{token.IDToken, token.AccessToken} {
+			if header := decodeJWTHeader(t, jwt); header.Kid != config.KeyID {
+				t.Fatalf("kid mismatch: got %q, want %q", header.Kid, config.KeyID)
+			}
+		}
+	})
+}
+
+func testRotationOfAsymmetricSigningKeys(t *testing.T) {
+	var keys [2]*rsa.PrivateKey
+	var ders [2][]byte
+	for i := range keys {
+		var err error
+		if keys[i], err = rsa.GenerateKey(rand.Reader, 2048); err != nil {
+			t.Fatal(err)
+		}
+		if ders[i], err = x509.MarshalPKCS8PrivateKey(keys[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keyIDs := []string{"current-key", "previous-key"}
+	config := defaultProviderConfig()
+	config.KeyB64 = base64.StdEncoding.EncodeToString(ders[0]) + "," + base64.StdEncoding.EncodeToString(ders[1])
+	config.KeyID = strings.Join(keyIDs, ",")
+	provider := startProvider(t, config)
+	request := newDefaultConfidentialAuthorizationRequest("signing-key-rotation")
+	token := authorizeAndExchange(t, provider, request, tokenRequest{
+		ClientID:     request.ClientID,
+		ClientSecret: webClientSecret,
+		CodeVerifier: request.Verifier,
+	})
+
+	t.Run("publishes every configured key", func(t *testing.T) {
+		jwks := fetchJWKS(t, provider)
+		if len(jwks.Keys) != len(keys) {
+			t.Fatalf("expected %d jwks, got %#v", len(keys), jwks.Keys)
+		}
+		for i, kid := range keyIDs {
+			if publicKey := rsaPublicKeyFromJWK(t, jwkForKeyID(t, jwks, kid)); publicKey.N.Cmp(keys[i].N) != 0 {
+				t.Fatalf("published key %q does not match the configured key", kid)
+			}
+		}
+	})
+
+	t.Run("signs with the first configured key", func(t *testing.T) {
+		for _, jwt := range []string{token.IDToken, token.AccessToken} {
+			if header := decodeJWTHeader(t, jwt); header.Kid != keyIDs[0] {
+				t.Fatalf("kid mismatch: got %q, want %q", header.Kid, keyIDs[0])
+			}
+		}
+		_ = verifyIDToken(t, provider, token.IDToken)
+		_ = verifyAccessToken(t, provider, token.AccessToken)
+	})
+
+	t.Run("accepts ID Token hints signed by previous keys", func(t *testing.T) {
+		request := newDefaultConfidentialAuthorizationRequest("signing-key-rotation-hint")
+		request.Prompt = "none"
+		params := authorizeParams(request)
+		params.Set("id_token_hint", resignJWT(t, token.IDToken, keys[1], keyIDs[1]))
+		expectAuthorizationCodeRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer)
+	})
+
+	t.Run("rejects ID Token hints signed by unpublished keys", func(t *testing.T) {
+		unpublishedKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, hint := range map[string]string{
+			"unknown key ID":  resignJWT(t, token.IDToken, keys[1], "unknown-key"),
+			"unpublished key": resignJWT(t, token.IDToken, unpublishedKey, keyIDs[1]),
+			"missing key ID":  resignJWT(t, token.IDToken, keys[0], ""),
+		} {
+			t.Run(name, func(t *testing.T) {
+				request := newDefaultConfidentialAuthorizationRequest("signing-key-rotation-invalid-hint")
+				params := authorizeParams(request)
+				params.Set("id_token_hint", hint)
+				expectAuthorizationErrorRedirect(t, provider.getAuthorize(t, params), http.StatusFound, request.RedirectURI, request.State, provider.issuer, "invalid_request")
+			})
+		}
+	})
+
+	t.Run("loads every private key from the key file in order", func(t *testing.T) {
+		loaded, err := loadSigningKeys(func(name string) string {
+			switch name {
+			case "SIMPLE_IDP_KEY_FILE":
+				return "keys.pem"
+			case "SIMPLE_IDP_KEY_ID":
+				return config.KeyID
+			}
+			return ""
+		}, func(string) ([]byte, error) {
+			return slices.Concat(
+				pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: ders[0]}),
+				pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("certificate")}),
+				pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: ders[1]}),
+			), nil
+		}, nil)
+		if err != nil || len(loaded) != len(keys) {
+			t.Fatalf("expected %d signing keys, got %d: %v", len(keys), len(loaded), err)
+		}
+		for i, key := range loaded {
+			if key.id != keyIDs[i] || key.privKey.N.Cmp(keys[i].N) != 0 {
+				t.Fatalf("signing key %d mismatch: got kid %q", i, key.id)
+			}
+		}
+	})
+
+	t.Run("derives a distinct key ID from each key by default", func(t *testing.T) {
+		withoutKeyIDs := config
+		withoutKeyIDs.KeyID = ""
+		jwks := fetchJWKS(t, startProvider(t, withoutKeyIDs))
+		if len(jwks.Keys) != len(keys) || jwks.Keys[0].KeyID == jwks.Keys[1].KeyID {
+			t.Fatalf("expected %d jwks with distinct kids, got %#v", len(keys), jwks.Keys)
+		}
+		for _, key := range jwks.Keys {
+			if want := jwkThumbprint(t, key); key.KeyID != want {
+				t.Fatalf("default kid mismatch: got %q, want %q", key.KeyID, want)
+			}
+		}
+	})
+
+	t.Run("accepts whitespace around the commas of key lists", func(t *testing.T) {
+		loaded, err := loadSigningKeys(func(name string) string {
+			switch name {
+			case "SIMPLE_IDP_KEY_B64":
+				return "\n  " + base64.StdEncoding.EncodeToString(ders[0]) + " ,\n\t" + base64.StdEncoding.EncodeToString(ders[1]) + "\n"
+			case "SIMPLE_IDP_KEY_ID":
+				return " " + keyIDs[0] + " ,\r\n " + keyIDs[1] + "\n"
+			}
+			return ""
+		}, nil, nil)
+		if err != nil || len(loaded) != len(keys) {
+			t.Fatalf("expected %d signing keys, got %d: %v", len(keys), len(loaded), err)
+		}
+		for i, key := range loaded {
+			if key.id != keyIDs[i] || key.privKey.N.Cmp(keys[i].N) != 0 {
+				t.Fatalf("signing key %d mismatch: got kid %q", i, key.id)
+			}
+		}
+	})
+
+	t.Run("rejects duplicate signing keys", func(t *testing.T) {
+		for _, keyID := range []string{"", config.KeyID} {
+			_, err := loadSigningKeys(func(name string) string {
+				switch name {
+				case "SIMPLE_IDP_KEY_B64":
+					return base64.StdEncoding.EncodeToString(ders[0]) + "," + base64.StdEncoding.EncodeToString(ders[0])
+				case "SIMPLE_IDP_KEY_ID":
+					return keyID
+				}
+				return ""
+			}, nil, nil)
+			if err == nil || !strings.Contains(err.Error(), "duplicate signing key") {
+				t.Fatalf("expected duplicate signing key error with key IDs %q, got %v", keyID, err)
+			}
+		}
+	})
+
+	t.Run("requires a unique key ID for each key", func(t *testing.T) {
 		for _, testCase := range []struct {
 			name  string
 			keyID string
-			want  string
 		}{
-			{name: "default", want: "simpleidp"},
-			{name: "configured", keyID: "signing-key-1", want: "signing-key-1"},
+			{name: "too few", keyID: keyIDs[0]},
+			{name: "duplicate", keyID: keyIDs[0] + "," + keyIDs[0]},
+			{name: "empty", keyID: "," + keyIDs[1]},
+			{name: "blank", keyID: keyIDs[0] + ", "},
+			{name: "too many", keyID: config.KeyID + ",next-key"},
 		} {
 			t.Run(testCase.name, func(t *testing.T) {
-				config := defaultProviderConfig()
-				config.KeyID = testCase.keyID
-				provider := startProvider(t, config)
-				request := newDefaultConfidentialAuthorizationRequest("signing-key-id")
-				token := authorizeAndExchange(t, provider, request, tokenRequest{
-					ClientID:     request.ClientID,
-					ClientSecret: webClientSecret,
-					CodeVerifier: request.Verifier,
-				})
-				if jwks := fetchJWKS(t, provider); len(jwks.Keys) != 1 || jwks.Keys[0].KeyID != testCase.want {
-					t.Fatalf("expected one jwk with kid %q, got %#v", testCase.want, jwks.Keys)
-				}
-				for _, jwt := range []string{token.IDToken, token.AccessToken} {
-					if header := decodeJWTHeader(t, jwt); header.Kid != testCase.want {
-						t.Fatalf("kid mismatch: got %q, want %q", header.Kid, testCase.want)
+				_, err := loadSigningKeys(func(name string) string {
+					switch name {
+					case "SIMPLE_IDP_KEY_B64":
+						return config.KeyB64
+					case "SIMPLE_IDP_KEY_ID":
+						return testCase.keyID
 					}
+					return ""
+				}, nil, nil)
+				if err == nil || !strings.Contains(err.Error(), "SIMPLE_IDP_KEY_ID") {
+					t.Fatalf("expected key ID error, got %v", err)
 				}
 			})
 		}
@@ -1543,6 +1784,53 @@ func testProfileUpdate(t *testing.T) {
 		}
 	})
 
+	t.Run("returns edited users after authentication", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.Users[0].TOTPSecret = testTOTPKeyBase32
+		provider := startProvider(t, config)
+		edit := userEdit{Username: "carol", Name: "Carol Example", Email: "carol@example.com"}
+		if !provider.idp.updateUser("ALICE", edit) {
+			t.Fatal("failed to edit the user")
+		}
+
+		passwordUser, _ := provider.idp.authenticateEndUser(edit.Username, testPassword)
+		provider.idp.mu.Lock()
+		provider.idp.pendingTOTPs["pending"] = pendingTOTP{UserLabel: "ALICE", CreatedAt: time.Now()}
+		provider.idp.mu.Unlock()
+		totpUser, _, _ := provider.idp.authenticateTOTP("pending", currentTOTPCode())
+		for _, authenticated := range []user{passwordUser, totpUser} {
+			if got := (userEdit{Username: authenticated.username, Name: authenticated.name, Email: authenticated.email}); got != edit {
+				t.Fatalf("authenticated user mismatch: got %#v, want %#v", got, edit)
+			}
+		}
+	})
+
+	t.Run("rejects usernames that another user renamed to", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.EditProfile = true
+		config.Users = append(config.Users, userConfig{
+			Label:    "BOB",
+			Username: "bob",
+			Password: "bob-password",
+		})
+		provider := startProvider(t, config)
+		_ = authorizeAndLogin(t, provider, newDefaultConfidentialAuthorizationRequest("profile-update-renamed-username"))
+		redirect := expectRedirect(t, submitProfileForm(t, provider, fetchProfilePage(t, provider), testName, "carol", testEmail), http.StatusSeeOther)
+		assertRedirectTarget(t, redirect, "/")
+
+		browser := newProviderBrowser(t, provider)
+		redirect = expectRedirect(t, submitLoginForm(t, browser, fetchLoginForm(t, browser), "bob", "bob-password"), http.StatusSeeOther)
+		assertRedirectTarget(t, redirect, "/")
+		resp := submitProfileForm(t, browser, fetchProfilePage(t, browser), "Bob Example", "carol", "bob@example.com")
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("profile update status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusOK, body)
+		}
+		if !strings.Contains(string(body), "Username already taken") {
+			t.Fatalf("expected %q message, got body=%s", "Username already taken", body)
+		}
+	})
+
 	t.Run("allows retrying after invalid profile values", func(t *testing.T) {
 		for _, invalid := range []string{"empty name", "invalid email", "taken username"} {
 			t.Run(invalid, func(t *testing.T) {
@@ -1573,6 +1861,16 @@ func testProfileUpdate(t *testing.T) {
 				}
 				if !strings.Contains(string(body), message) {
 					t.Fatalf("expected %q message, got body=%s", message, body)
+				}
+				for field, value := range map[string]string{"name": name, "username": username, "email": email} {
+					tag := extractInputTag(t, body, field)
+					kept := strings.Contains(tag, `value="`+html.EscapeString(value)+`"`)
+					if value == "" {
+						kept = !strings.Contains(tag, "value=")
+					}
+					if !kept {
+						t.Fatalf("expected the submitted %s %q to be kept, got %s", field, value, tag)
+					}
 				}
 
 				redirect := expectRedirect(t, submitProfileForm(t, provider, body, testName, "carol", testEmail), http.StatusSeeOther)

@@ -46,6 +46,7 @@ const (
 var testGroups = []string{"admins", "developers"}
 
 type providerConfig struct {
+	Listen         string
 	IssuerPath     string
 	EditProfile    bool
 	Logo           string
@@ -55,6 +56,8 @@ type providerConfig struct {
 	Language       string
 	AccessTokenTTL time.Duration
 	KeyID          string
+	KeyB64         string
+	StateFile      string
 	Clients        []clientConfig
 	Users          []userConfig
 }

@@ -33,7 +33,7 @@ import (
 type jwtHeader struct {
 	Alg string `json:"alg"`
 	Typ string `json:"typ"`
-	Kid string `json:"kid"`
+	Kid string `json:"kid,omitzero"`
 }
 
 type rpInitiatedLogoutFixture struct {
@@ -236,7 +236,29 @@ func replaceJWTClaims(t *testing.T, provider *providerProcess, token string, cla
 	}
 	signingInput := parts[0] + "." + base64.RawURLEncoding.EncodeToString(payload)
 	digest := sha256.Sum256([]byte(signingInput))
-	signature, err := rsa.SignPKCS1v15(nil, provider.idp.privKey, crypto.SHA256, digest[:])
+	signature, err := rsa.SignPKCS1v15(nil, provider.idp.signingKeys[0].privKey, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("failed to sign test JWT: %v", err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func resignJWT(t *testing.T, token string, key *rsa.PrivateKey, kid string) string {
+	t.Helper()
+
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("invalid JWT format: %q", token)
+	}
+	header := decodeJWTHeader(t, token)
+	header.Kid = kid
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		t.Fatalf("failed to encode JWT header: %v", err)
+	}
+	signingInput := base64.RawURLEncoding.EncodeToString(headerJSON) + "." + parts[1]
+	digest := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(nil, key, crypto.SHA256, digest[:])
 	if err != nil {
 		t.Fatalf("failed to sign test JWT: %v", err)
 	}
@@ -616,17 +638,11 @@ func verifyLogoutToken(t *testing.T, provider *providerProcess, rawToken string)
 	t.Helper()
 
 	jwks := fetchJWKS(t, provider)
-	if len(jwks.Keys) != 1 {
-		t.Fatalf("expected a single jwk, got %#v", jwks.Keys)
-	}
 	header := decodeJWTHeader(t, rawToken)
 	if header.Alg != "RS256" {
 		t.Fatalf("signing algorithm mismatch: got %q, want %q", header.Alg, "RS256")
 	}
-	if header.Kid == "" || header.Kid != jwks.Keys[0].KeyID {
-		t.Fatalf("kid mismatch: got %q, want %q", header.Kid, jwks.Keys[0].KeyID)
-	}
-	publicKey := rsaPublicKeyFromJWK(t, jwks.Keys[0])
+	publicKey := rsaPublicKeyFromJWK(t, jwkForKeyID(t, jwks, header.Kid))
 
 	parts := strings.Split(rawToken, ".")
 	if len(parts) != 3 {

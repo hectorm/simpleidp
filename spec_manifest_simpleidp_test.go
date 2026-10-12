@@ -15,7 +15,8 @@ var simpleIdPSections = []specSection{
 	{Spec: "Simple IdP", Section: "3", Title: "Branding", Applicable: true, Run: testBranding},
 	{Spec: "Simple IdP", Section: "4", Title: "Localization", Applicable: true, Run: testLocalization},
 	{Spec: "Simple IdP", Section: "5", Title: "Lifetimes", Applicable: true, Run: testLifetimes},
-	{Spec: "Simple IdP", Section: "6", Title: "Logging", Applicable: true, Run: testLogging},
+	{Spec: "Simple IdP", Section: "6", Title: "Persistence", Applicable: true, Run: testPersistence},
+	{Spec: "Simple IdP", Section: "7", Title: "Logging", Applicable: true, Run: testLogging},
 }
 
 func TestSimpleIdPSections(t *testing.T) {

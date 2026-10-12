@@ -12,6 +12,8 @@ services:
       - "simpleidp"
     ports:
       - "8227:8227/tcp"
+    volumes:
+      - { type: "volume", source: "simpleidp-data", target: "/var/lib/simpleidp/" }
     environment:
       SIMPLE_IDP_ISSUER: "${SIMPLE_IDP_ISSUER:-http://idp.localhost:8227}"
       SIMPLE_IDP_TITLE: "${SIMPLE_IDP_TITLE:-Simple IdP}"
@@ -26,6 +28,9 @@ services:
       SIMPLE_IDP_ACCESS_TOKEN_TTL: "${SIMPLE_IDP_ACCESS_TOKEN_TTL:-}"
       SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL: "${SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL:-}"
       SIMPLE_IDP_REFRESH_TOKEN_MAX_TTL: "${SIMPLE_IDP_REFRESH_TOKEN_MAX_TTL:-}"
+      SIMPLE_IDP_KEY_ID: "${SIMPLE_IDP_KEY_ID:-}"
+      SIMPLE_IDP_KEY_B64: "${SIMPLE_IDP_KEY_B64:-}"
+      SIMPLE_IDP_STATE_FILE: "${SIMPLE_IDP_STATE_FILE:-/var/lib/simpleidp/state.json}"
       SIMPLE_IDP_LOG_LEVEL: "${SIMPLE_IDP_LOG_LEVEL:-}"
       SIMPLE_IDP_CLIENT_APP_ID: "${SIMPLE_IDP_CLIENT_ID:-app}"
       SIMPLE_IDP_CLIENT_APP_SECRET: "${SIMPLE_IDP_CLIENT_SECRET:-secret}"
@@ -58,6 +63,9 @@ services:
       SIMPLE_IDP_USER_FRANK_PASSWORD: "password"
       SIMPLE_IDP_USER_FRANK_NAME: "Frank Graham"
       SIMPLE_IDP_USER_FRANK_GROUPS: "zeta,eta"
+
+volumes:
+  simpleidp-data:
 
 networks:
   simpleidp:

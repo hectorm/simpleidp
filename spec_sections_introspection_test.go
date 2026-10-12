@@ -292,8 +292,8 @@ func testIntrospectionResponse(t *testing.T) {
 				provider.idp.mu.Lock()
 				stored, ok := provider.idp.refreshTokens[token.RefreshToken]
 				if ok {
-					stored.createdAt = idleExpiry.Add(-provider.idp.refreshTokenIdleTTL)
-					stored.sessionStartedAt = maxExpiry.Add(-provider.idp.refreshTokenMaxTTL)
+					stored.CreatedAt = idleExpiry.Add(-provider.idp.refreshTokenIdleTTL)
+					stored.SessionStartedAt = maxExpiry.Add(-provider.idp.refreshTokenMaxTTL)
 					provider.idp.refreshTokens[token.RefreshToken] = stored
 				}
 				provider.idp.mu.Unlock()

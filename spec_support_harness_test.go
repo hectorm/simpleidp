@@ -71,8 +71,15 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 	if err != nil {
 		t.Fatalf("failed to generate signing key: %v", err)
 	}
+	if config.KeyB64 != "" {
+		signingKey = config.KeyB64
+	}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listenAddress := "127.0.0.1:0"
+	if config.Listen != "" {
+		listenAddress = config.Listen
+	}
+	listener, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		t.Fatalf("failed to open listener: %v", err)
 	}
@@ -115,6 +122,9 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 	}
 	if config.KeyID != "" {
 		env = append(env, "SIMPLE_IDP_KEY_ID="+config.KeyID)
+	}
+	if config.StateFile != "" {
+		env = append(env, "SIMPLE_IDP_STATE_FILE="+config.StateFile)
 	}
 	for _, client := range config.Clients {
 		prefix := "SIMPLE_IDP_CLIENT_" + client.Label + "_"
@@ -756,17 +766,11 @@ func verifyIDToken(t *testing.T, provider *providerProcess, idToken string) idTo
 	t.Helper()
 
 	jwks := fetchJWKS(t, provider)
-	if len(jwks.Keys) != 1 {
-		t.Fatalf("expected a single jwk, got %#v", jwks.Keys)
-	}
 	header := decodeJWTHeader(t, idToken)
 	if header.Alg != "RS256" {
 		t.Fatalf("signing algorithm mismatch: got %q, want %q", header.Alg, "RS256")
 	}
-	if header.Kid == "" || header.Kid != jwks.Keys[0].KeyID {
-		t.Fatalf("kid mismatch: got %q, want %q", header.Kid, jwks.Keys[0].KeyID)
-	}
-	publicKey := rsaPublicKeyFromJWK(t, jwks.Keys[0])
+	publicKey := rsaPublicKeyFromJWK(t, jwkForKeyID(t, jwks, header.Kid))
 
 	parts := strings.Split(idToken, ".")
 	if len(parts) != 3 {
@@ -800,17 +804,11 @@ func verifyAccessToken(t *testing.T, provider *providerProcess, accessToken stri
 	t.Helper()
 
 	jwks := fetchJWKS(t, provider)
-	if len(jwks.Keys) != 1 {
-		t.Fatalf("expected a single jwk, got %#v", jwks.Keys)
-	}
 	header := decodeJWTHeader(t, accessToken)
 	if header.Alg != "RS256" {
 		t.Fatalf("signing algorithm mismatch: got %q, want %q", header.Alg, "RS256")
 	}
-	if header.Kid == "" || header.Kid != jwks.Keys[0].KeyID {
-		t.Fatalf("kid mismatch: got %q, want %q", header.Kid, jwks.Keys[0].KeyID)
-	}
-	publicKey := rsaPublicKeyFromJWK(t, jwks.Keys[0])
+	publicKey := rsaPublicKeyFromJWK(t, jwkForKeyID(t, jwks, header.Kid))
 
 	parts := strings.Split(accessToken, ".")
 	if len(parts) != 3 {
@@ -873,6 +871,18 @@ func fetchJWKS(t *testing.T, provider *providerProcess) jwksDocument {
 		t.Fatalf("failed to decode jwks response: %v\nbody=%s", err, body)
 	}
 	return document
+}
+
+func jwkForKeyID(t *testing.T, jwks jwksDocument, kid string) jwk {
+	t.Helper()
+
+	for _, key := range jwks.Keys {
+		if kid != "" && key.KeyID == kid {
+			return key
+		}
+	}
+	t.Fatalf("no jwk with kid %q in %#v", kid, jwks.Keys)
+	return jwk{}
 }
 
 func rsaPublicKeyFromJWK(t *testing.T, key jwk) *rsa.PublicKey {
@@ -943,7 +953,7 @@ func (p *providerProcess) expirePendingTOTPs(t *testing.T) {
 	p.idp.mu.Lock()
 	defer p.idp.mu.Unlock()
 	for preAuthID, pending := range p.idp.pendingTOTPs {
-		pending.createdAt = time.Now().Add(-loginActionTTL - time.Second)
+		pending.CreatedAt = time.Now().Add(-loginActionTTL - time.Second)
 		p.idp.pendingTOTPs[preAuthID] = pending
 	}
 }
@@ -965,7 +975,7 @@ func (p *providerProcess) isThrottledAt(t *testing.T, now time.Time, failures in
 
 	p.idp.mu.Lock()
 	defer p.idp.mu.Unlock()
-	p.idp.throttles["throttle-test"] = throttle{failures: failures, lastFailure: lastFailure}
+	p.idp.throttles["throttle-test"] = throttle{Failures: failures, LastFailure: lastFailure}
 	return p.idp.throttleWait("throttle-test", maxDelay, now) > 0
 }
 
@@ -974,7 +984,7 @@ func (p *providerProcess) agePasswordThrottle(t *testing.T, failures int, age ti
 
 	p.idp.mu.Lock()
 	defer p.idp.mu.Unlock()
-	p.idp.throttles["password:ALICE"] = throttle{failures: failures, lastFailure: time.Now().Add(-age)}
+	p.idp.throttles["password:ALICE"] = throttle{Failures: failures, LastFailure: time.Now().Add(-age)}
 }
 
 func (p *providerProcess) ageTOTPThrottle(t *testing.T, failures int, age time.Duration) {
@@ -982,7 +992,7 @@ func (p *providerProcess) ageTOTPThrottle(t *testing.T, failures int, age time.D
 
 	p.idp.mu.Lock()
 	defer p.idp.mu.Unlock()
-	p.idp.throttles["totp:ALICE"] = throttle{failures: failures, lastFailure: time.Now().Add(-age)}
+	p.idp.throttles["totp:ALICE"] = throttle{Failures: failures, LastFailure: time.Now().Add(-age)}
 }
 
 func (p *providerProcess) currentSessionCookie(t *testing.T) *http.Cookie {
@@ -1029,10 +1039,10 @@ func (p *providerProcess) ageSession(t *testing.T, authenticatedAge, idleAge tim
 		t.Fatalf("session %q not found", sessionID)
 	}
 	now := time.Now()
-	currentSession.authenticatedAt = now.Add(-authenticatedAge)
-	currentSession.lastSeenAt = now.Add(-idleAge)
+	currentSession.AuthenticatedAt = now.Add(-authenticatedAge)
+	currentSession.LastSeenAt = now.Add(-idleAge)
 	p.idp.sessions[sessionID] = currentSession
-	return currentSession.authenticatedAt
+	return currentSession.AuthenticatedAt
 }
 
 func (p *providerProcess) expireAuthorizationCode(t *testing.T, code string) {
@@ -1045,7 +1055,7 @@ func (p *providerProcess) expireAuthorizationCode(t *testing.T, code string) {
 	if !ok {
 		t.Fatalf("authorization code %q not found", code)
 	}
-	pending.createdAt = time.Now().Add(-10 * time.Minute)
+	pending.CreatedAt = time.Now().Add(-10 * time.Minute)
 	p.idp.pendingCodes[code] = pending
 }
 
@@ -1056,11 +1066,11 @@ func (p *providerProcess) ageConsumedAuthorizationCode(t *testing.T, code string
 	defer p.idp.mu.Unlock()
 
 	pending, ok := p.idp.pendingCodes[code]
-	if !ok || pending.consumedAt.IsZero() {
+	if !ok || pending.ConsumedAt.IsZero() {
 		t.Fatalf("consumed authorization code %q not found", code)
 	}
-	pending.consumedAt = time.Now().Add(-age)
-	pending.createdAt = pending.consumedAt
+	pending.ConsumedAt = time.Now().Add(-age)
+	pending.CreatedAt = pending.ConsumedAt
 	p.idp.pendingCodes[code] = pending
 }
 
@@ -1074,7 +1084,7 @@ func (p *providerProcess) accessTokenExpiry(t *testing.T, token string) time.Tim
 	if !ok {
 		t.Fatalf("access token %q not found", token)
 	}
-	return accessToken.expiry
+	return accessToken.Expiry
 }
 
 func (p *providerProcess) assertRefreshTokenIssueTime(t *testing.T, token string, earliest, latest time.Time) {
@@ -1086,8 +1096,8 @@ func (p *providerProcess) assertRefreshTokenIssueTime(t *testing.T, token string
 	if !ok {
 		t.Fatal("issued refresh token was not stored")
 	}
-	if stored.createdAt.Before(earliest) || stored.createdAt.After(latest) {
-		t.Fatalf("refresh token issue time %s is outside exchange interval [%s, %s]", stored.createdAt, earliest, latest)
+	if stored.CreatedAt.Before(earliest) || stored.CreatedAt.After(latest) {
+		t.Fatalf("refresh token issue time %s is outside exchange interval [%s, %s]", stored.CreatedAt, earliest, latest)
 	}
 }
 
@@ -1101,7 +1111,7 @@ func (p *providerProcess) expireAccessToken(t *testing.T, token string) {
 	if !ok {
 		t.Fatalf("access token %q not found", token)
 	}
-	accessToken.expiry = time.Now().Add(-time.Minute)
+	accessToken.Expiry = time.Now().Add(-time.Minute)
 	p.idp.accessTokens[token] = accessToken
 }
 
@@ -1115,8 +1125,8 @@ func (p *providerProcess) expireRefreshTokenMax(t *testing.T, refreshTokenValue 
 	if !ok {
 		t.Fatalf("refresh token %q not found", refreshTokenValue)
 	}
-	storedRefreshToken.sessionStartedAt = time.Now().Add(-p.idp.refreshTokenMaxTTL - time.Minute)
-	storedRefreshToken.createdAt = time.Now()
+	storedRefreshToken.SessionStartedAt = time.Now().Add(-p.idp.refreshTokenMaxTTL - time.Minute)
+	storedRefreshToken.CreatedAt = time.Now()
 	p.idp.refreshTokens[refreshTokenValue] = storedRefreshToken
 }
 
@@ -1130,7 +1140,7 @@ func (p *providerProcess) expireRefreshTokenIdle(t *testing.T, refreshTokenValue
 	if !ok {
 		t.Fatalf("refresh token %q not found", refreshTokenValue)
 	}
-	storedRefreshToken.createdAt = time.Now().Add(-p.idp.refreshTokenIdleTTL - time.Minute)
+	storedRefreshToken.CreatedAt = time.Now().Add(-p.idp.refreshTokenIdleTTL - time.Minute)
 	p.idp.refreshTokens[refreshTokenValue] = storedRefreshToken
 }
 
@@ -1307,6 +1317,17 @@ func currentTOTPCode() string {
 func accessTokenHash(accessToken string) string {
 	sum := sha256.Sum256([]byte(accessToken))
 	return base64.RawURLEncoding.EncodeToString(sum[:len(sum)/2])
+}
+
+func jwkThumbprint(t *testing.T, key jwk) string {
+	t.Helper()
+
+	members, err := json.Marshal(map[string]string{"e": key.E, "kty": key.KeyType, "n": key.N}, json.Deterministic(true))
+	if err != nil {
+		t.Fatalf("failed to encode jwk thumbprint members: %v", err)
+	}
+	sum := sha256.Sum256(members)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func defaultSubject(label string) string {
