@@ -610,7 +610,12 @@ func testPersistence(t *testing.T) {
 		if err := os.WriteFile(config.StateFile, []byte("{}"), 0o600); err != nil {
 			t.Fatalf("failed to write state file: %v", err)
 		}
-		initial, err := os.Stat(config.StateFile)
+		original, err := os.Open(filepath.Clean(config.StateFile))
+		if err != nil {
+			t.Fatalf("failed to open state file: %v", err)
+		}
+		t.Cleanup(func() { _ = original.Close() })
+		initial, err := original.Stat()
 		if err != nil {
 			t.Fatalf("failed to stat state file: %v", err)
 		}
