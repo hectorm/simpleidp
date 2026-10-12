@@ -1667,6 +1667,44 @@ func testProfileLogin(t *testing.T) {
 		}
 	})
 
+	t.Run("keeps at most 100 sessions per user", func(t *testing.T) {
+		receiver, receiverURL := startBackchannelLogoutReceiver(t)
+		provider := startProvider(t, backchannelProviderConfig(receiverURL, false))
+		first := newProviderBrowser(t, provider)
+		request := newDefaultConfidentialAuthorizationRequest("session-limit")
+		_ = authorizeAndExchange(t, first, request, tokenRequest{
+			ClientID:     request.ClientID,
+			ClientSecret: webClientSecret,
+			CodeVerifier: request.Verifier,
+		})
+		firstSessionID := first.currentSessionID(t)
+		for range maxSessionsPerUser {
+			browser := newProviderBrowser(t, provider)
+			redirect := expectRedirect(t, submitLoginForm(t, browser, fetchLoginForm(t, browser), testUsername, testPassword), http.StatusSeeOther)
+			assertRedirectTarget(t, redirect, "/")
+		}
+		provider.idp.mu.Lock()
+		sessions := len(provider.idp.sessions)
+		provider.idp.mu.Unlock()
+		if sessions != maxSessionsPerUser {
+			t.Fatalf("expected %d sessions, got %d", maxSessionsPerUser, sessions)
+		}
+
+		req, err := http.NewRequest(http.MethodGet, first.endpoint("/"), nil)
+		if err != nil {
+			t.Fatalf("failed to create profile request: %v", err)
+		}
+		redirect := expectRedirect(t, first.do(t, first.redirectless, req), http.StatusFound)
+		assertRedirectTarget(t, redirect, "/login")
+		requests := receiver.receivedRequests()
+		if len(requests) != 1 {
+			t.Fatalf("expected 1 back-channel logout for the least recently used session, got %d", len(requests))
+		}
+		if claims := verifyLogoutToken(t, provider, requests[0].rawToken); claims.Sid != firstSessionID {
+			t.Fatalf("logout token sid mismatch: got %q, want %q", claims.Sid, firstSessionID)
+		}
+	})
+
 	t.Run("asks for the password again after the authentication step expires", func(t *testing.T) {
 		config := defaultProviderConfig()
 		config.Users[0].TOTPSecret = testTOTPKeyBase32

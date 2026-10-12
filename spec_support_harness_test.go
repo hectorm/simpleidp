@@ -46,7 +46,7 @@ import (
 type providerProcess struct {
 	issuer       string
 	idp          *identityProvider
-	server       *http.Server
+	server       *Server
 	serveDone    chan struct{}
 	serveErrMu   sync.Mutex
 	serveErr     error

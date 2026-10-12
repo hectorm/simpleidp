@@ -97,7 +97,7 @@ import (
 	"unicode/utf8"
 )
 
-func New(environ []string, lookupEnv func(string) string, readFile func(string) ([]byte, error)) (string, *http.Server, error) {
+func New(environ []string, lookupEnv func(string) string, readFile func(string) ([]byte, error)) (string, *Server, error) {
 	listen, provider, err := newIdentityProvider(environ, lookupEnv, readFile)
 	if err != nil {
 		return "", nil, err
@@ -116,9 +116,11 @@ const (
 	throttle1FAMaxDelay          = 15 * time.Minute
 	throttle2FAMaxDelay          = 24 * time.Hour
 	throttleTTL                  = 7 * 24 * time.Hour
+	stateSaveDelay               = time.Second
 	maxFormBodyBytes             = 1 << 20
 	maxLogValueBytes             = 128
 	maxPendingTOTPsPerUser       = 10
+	maxSessionsPerUser           = 100
 	sessionCookieBaseName        = "simple_idp_session"
 	preAuthSessionCookieBaseName = "simple_idp_preauth_session"
 	resubmitParam                = "resubmitted"
@@ -285,7 +287,13 @@ type identityProvider struct {
 	lastTOTPSteps       map[string]int64
 	throttles           map[string]throttle
 	stateFileData       []byte
+	stateSaveTimer      *time.Timer
 	mu                  sync.Mutex
+}
+
+type Server struct {
+	*http.Server
+	provider *identityProvider
 }
 
 // -------------------------------------------------------------------------- //
@@ -441,7 +449,7 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 	return listen, provider, nil
 }
 
-func newServer(listen string, provider *identityProvider) *http.Server {
+func newServer(listen string, provider *identityProvider) *Server {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET "+provider.base+"/{$}", provider.handleProfile)
@@ -482,19 +490,24 @@ func newServer(listen string, provider *identityProvider) *http.Server {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Pragma", "no-cache")
 		mux.ServeHTTP(w, r)
-		if err := provider.saveState(); err != nil {
-			slog.Error("failed to save state", "error", err)
-		}
+		provider.saveStateLater()
 	})
 
-	return &http.Server{
-		Addr:              listen,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       120 * time.Second,
+	return &Server{
+		Server: &http.Server{
+			Addr:              listen,
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		},
+		provider: provider,
 	}
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	return errors.Join(s.Server.Shutdown(ctx), s.provider.saveState())
 }
 
 func (p *identityProvider) handleProfile(w http.ResponseWriter, r *http.Request) {
@@ -2233,6 +2246,19 @@ func (p *identityProvider) issueSession(w http.ResponseWriter, authenticatedUser
 
 	sessionID = rand.Text()
 	p.mu.Lock()
+	p.removeExpiredState()
+	var userSessionIDs []string
+	for id, userSession := range p.sessions {
+		if userSession.UserLabel == authenticatedUser.label {
+			userSessionIDs = append(userSessionIDs, id)
+		}
+	}
+	leastRecentSessionID := ""
+	if len(userSessionIDs) >= maxSessionsPerUser {
+		leastRecentSessionID = slices.MinFunc(userSessionIDs, func(a, b string) int {
+			return p.sessions[a].LastSeenAt.Compare(p.sessions[b].LastSeenAt)
+		})
+	}
 	p.sessions[sessionID] = session{
 		UserLabel:       authenticatedUser.label,
 		CookieDigest:    cookieDigest,
@@ -2241,8 +2267,10 @@ func (p *identityProvider) issueSession(w http.ResponseWriter, authenticatedUser
 		AMR:             amr,
 		LastSeenAt:      authenticatedAt,
 	}
-	p.removeExpiredState()
 	p.mu.Unlock()
+	if leastRecentSessionID != "" {
+		p.clearSession(w, leastRecentSessionID)
+	}
 	http.SetCookie(w, cookie)
 	slog.Info("user signed in", "label", authenticatedUser.label, "sid", sessionID)
 	return sessionID
@@ -2543,6 +2571,7 @@ func (p *identityProvider) saveState() error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.stateSaveTimer = nil
 	state := persistedState{
 		Issuer:        p.issuer,
 		Subjects:      map[string]string{},
@@ -2590,6 +2619,21 @@ func (p *identityProvider) saveState() error {
 	}
 	p.stateFileData = data
 	return nil
+}
+
+func (p *identityProvider) saveStateLater() {
+	if p.stateFile == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stateSaveTimer == nil {
+		p.stateSaveTimer = time.AfterFunc(stateSaveDelay, func() {
+			if err := p.saveState(); err != nil {
+				slog.Error("failed to save state", "error", err)
+			}
+		})
+	}
 }
 
 // -------------------------------------------------------------------------- //

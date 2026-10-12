@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testPersistence(t *testing.T) {
@@ -33,6 +34,31 @@ func testPersistence(t *testing.T) {
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("userinfo status mismatch: got %s, want %d; body=%s", resp.Status, http.StatusUnauthorized, body)
 		}
+	})
+
+	t.Run("saves the state in the background shortly after it changes", func(t *testing.T) {
+		config := defaultProviderConfig()
+		config.StateFile = filepath.Join(t.TempDir(), "state.json")
+		provider := startProvider(t, config)
+		_ = authorizeAndLogin(t, provider, newDefaultConfidentialAuthorizationRequest("persistence-background"))
+
+		deadline := time.Now().Add(5 * stateSaveDelay)
+		var data []byte
+
+		for time.Now().Before(deadline) {
+			var err error
+			data, err = os.ReadFile(filepath.Clean(config.StateFile))
+			if err != nil {
+				t.Fatalf("failed to read state file: %v", err)
+			}
+			if sessions, ok := decodeJSONMap(t, data)["Sessions"].(map[string]any); ok && len(sessions) == 1 {
+				return
+			}
+
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		t.Fatalf("expected one persisted session without a restart, got %s", data)
 	})
 
 	t.Run("restores sessions and tokens after a restart", func(t *testing.T) {
@@ -158,6 +184,7 @@ func testPersistence(t *testing.T) {
 				config.StateFile = link
 				provider := startProvider(t, config)
 				_ = authorizeAndLogin(t, provider, newDefaultConfidentialAuthorizationRequest("persistence-symlink"))
+				provider.stop(t)
 
 				if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
 					t.Fatalf("expected the state file link to be kept, got %v: %v", info, err)
@@ -181,6 +208,7 @@ func testPersistence(t *testing.T) {
 		}
 		provider := startProvider(t, config)
 		_ = authorizeAndLogin(t, provider, newDefaultConfidentialAuthorizationRequest("persistence-empty"))
+		provider.stop(t)
 
 		data, err := os.ReadFile(filepath.Clean(config.StateFile))
 		if err != nil {
@@ -621,6 +649,7 @@ func testPersistence(t *testing.T) {
 		}
 		provider := startProvider(t, config)
 		_ = authorizeAndLogin(t, provider, newDefaultConfidentialAuthorizationRequest("persistence-file"))
+		provider.stop(t)
 
 		info, err := os.Stat(config.StateFile)
 		if err != nil {
