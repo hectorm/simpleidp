@@ -12,6 +12,8 @@ package simpleidp
 import (
 	"bytes"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
@@ -19,6 +21,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"math/big"
 	"mime"
 	"net"
 	"net/http"
@@ -236,14 +239,18 @@ func replaceJWTClaims(t *testing.T, provider *providerProcess, token string, cla
 	}
 	signingInput := parts[0] + "." + base64.RawURLEncoding.EncodeToString(payload)
 	digest := sha256.Sum256([]byte(signingInput))
-	signature, err := rsa.SignPKCS1v15(nil, provider.idp.signingKeys[0].privKey, crypto.SHA256, digest[:])
+	privKey, ok := provider.idp.signingKeys[0].privKey.(*rsa.PrivateKey)
+	if !ok {
+		t.Fatal("expected the first signing key to be RSA")
+	}
+	signature, err := rsa.SignPKCS1v15(nil, privKey, crypto.SHA256, digest[:])
 	if err != nil {
 		t.Fatalf("failed to sign test JWT: %v", err)
 	}
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
-func resignJWT(t *testing.T, token string, key *rsa.PrivateKey, kid string) string {
+func resignJWT(t *testing.T, token string, key crypto.Signer, kid string) string {
 	t.Helper()
 
 	parts := strings.Split(token, ".")
@@ -258,7 +265,16 @@ func resignJWT(t *testing.T, token string, key *rsa.PrivateKey, kid string) stri
 	}
 	signingInput := base64.RawURLEncoding.EncodeToString(headerJSON) + "." + parts[1]
 	digest := sha256.Sum256([]byte(signingInput))
-	signature, err := rsa.SignPKCS1v15(nil, key, crypto.SHA256, digest[:])
+	var signature []byte
+	switch privKey := key.(type) {
+	case *rsa.PrivateKey:
+		signature, err = rsa.SignPKCS1v15(nil, privKey, crypto.SHA256, digest[:])
+	case *ecdsa.PrivateKey:
+		var r, s *big.Int
+		if r, s, err = ecdsa.Sign(rand.Reader, privKey, digest[:]); err == nil {
+			signature = append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...)
+		}
+	}
 	if err != nil {
 		t.Fatalf("failed to sign test JWT: %v", err)
 	}
@@ -637,29 +653,7 @@ func decodeLogoutToken(t *testing.T, rawToken string) logoutTokenClaims {
 func verifyLogoutToken(t *testing.T, provider *providerProcess, rawToken string) logoutTokenClaims {
 	t.Helper()
 
-	jwks := fetchJWKS(t, provider)
-	header := decodeJWTHeader(t, rawToken)
-	if header.Alg != "RS256" {
-		t.Fatalf("signing algorithm mismatch: got %q, want %q", header.Alg, "RS256")
-	}
-	publicKey := rsaPublicKeyFromJWK(t, jwkForKeyID(t, jwks, header.Kid))
-
-	parts := strings.Split(rawToken, ".")
-	if len(parts) != 3 {
-		t.Fatalf("invalid logout token format: %q", rawToken)
-	}
-
-	signingInput := parts[0] + "." + parts[1]
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		t.Fatalf("failed to decode logout token signature: %v", err)
-	}
-
-	digest := sha256.Sum256([]byte(signingInput))
-	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
-		t.Fatalf("failed to verify logout token signature: %v", err)
-	}
-
+	assertJWTSignature(t, provider, rawToken)
 	return decodeLogoutToken(t, rawToken)
 }
 

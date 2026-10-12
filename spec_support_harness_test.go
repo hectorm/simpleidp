@@ -11,6 +11,8 @@ package simpleidp
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
@@ -137,6 +139,9 @@ func startProvider(t *testing.T, config providerConfig) *providerProcess {
 		}
 		if client.Audience != "" {
 			env = append(env, prefix+"AUDIENCE="+client.Audience)
+		}
+		if client.SigningAlg != "" {
+			env = append(env, prefix+"SIGNING_ALG="+client.SigningAlg)
 		}
 		if client.PostLogoutRedirectURL != "" {
 			env = append(env, prefix+"POST_LOGOUT_REDIRECT_URL="+client.PostLogoutRedirectURL)
@@ -765,29 +770,8 @@ func exchangeClientCredentials(t *testing.T, provider *providerProcess, request 
 func verifyIDToken(t *testing.T, provider *providerProcess, idToken string) idTokenClaims {
 	t.Helper()
 
-	jwks := fetchJWKS(t, provider)
-	header := decodeJWTHeader(t, idToken)
-	if header.Alg != "RS256" {
-		t.Fatalf("signing algorithm mismatch: got %q, want %q", header.Alg, "RS256")
-	}
-	publicKey := rsaPublicKeyFromJWK(t, jwkForKeyID(t, jwks, header.Kid))
-
+	assertJWTSignature(t, provider, idToken)
 	parts := strings.Split(idToken, ".")
-	if len(parts) != 3 {
-		t.Fatalf("invalid id token format: %q", idToken)
-	}
-
-	signingInput := parts[0] + "." + parts[1]
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		t.Fatalf("failed to decode id token signature: %v", err)
-	}
-
-	digest := sha256.Sum256([]byte(signingInput))
-	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
-		t.Fatalf("failed to verify id token signature: %v", err)
-	}
-
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		t.Fatalf("failed to decode id token payload: %v", err)
@@ -803,29 +787,8 @@ func verifyIDToken(t *testing.T, provider *providerProcess, idToken string) idTo
 func verifyAccessToken(t *testing.T, provider *providerProcess, accessToken string) accessTokenClaims {
 	t.Helper()
 
-	jwks := fetchJWKS(t, provider)
-	header := decodeJWTHeader(t, accessToken)
-	if header.Alg != "RS256" {
-		t.Fatalf("signing algorithm mismatch: got %q, want %q", header.Alg, "RS256")
-	}
-	publicKey := rsaPublicKeyFromJWK(t, jwkForKeyID(t, jwks, header.Kid))
-
+	assertJWTSignature(t, provider, accessToken)
 	parts := strings.Split(accessToken, ".")
-	if len(parts) != 3 {
-		t.Fatalf("invalid access token format: %q", accessToken)
-	}
-
-	signingInput := parts[0] + "." + parts[1]
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		t.Fatalf("failed to decode access token signature: %v", err)
-	}
-
-	digest := sha256.Sum256([]byte(signingInput))
-	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
-		t.Fatalf("failed to verify access token signature: %v", err)
-	}
-
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		t.Fatalf("failed to decode access token payload: %v", err)
@@ -885,6 +848,35 @@ func jwkForKeyID(t *testing.T, jwks jwksDocument, kid string) jwk {
 	return jwk{}
 }
 
+func assertJWTSignature(t *testing.T, provider *providerProcess, token string) {
+	t.Helper()
+
+	header := decodeJWTHeader(t, token)
+	key := jwkForKeyID(t, fetchJWKS(t, provider), header.Kid)
+	if header.Alg != key.Alg {
+		t.Fatalf("signing algorithm mismatch: got %q, want %q", header.Alg, key.Alg)
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("invalid JWT format: %q", token)
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		t.Fatalf("failed to decode JWT signature: %v", err)
+	}
+	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	verified := false
+	switch key.KeyType {
+	case "RSA":
+		verified = rsa.VerifyPKCS1v15(rsaPublicKeyFromJWK(t, key), crypto.SHA256, digest[:], signature) == nil
+	case "EC":
+		verified = len(signature) == 64 && ecdsa.Verify(ecdsaPublicKeyFromJWK(t, key), digest[:], new(big.Int).SetBytes(signature[:32]), new(big.Int).SetBytes(signature[32:]))
+	}
+	if !verified {
+		t.Fatalf("failed to verify JWT signature with jwk %#v", key)
+	}
+}
+
 func rsaPublicKeyFromJWK(t *testing.T, key jwk) *rsa.PublicKey {
 	t.Helper()
 
@@ -905,6 +897,27 @@ func rsaPublicKeyFromJWK(t *testing.T, key jwk) *rsa.PublicKey {
 		N: new(big.Int).SetBytes(modulus),
 		E: int(new(big.Int).SetBytes(exponent).Int64()),
 	}
+}
+
+func ecdsaPublicKeyFromJWK(t *testing.T, key jwk) *ecdsa.PublicKey {
+	t.Helper()
+
+	if key.KeyType != "EC" || key.Curve != "P-256" || key.Alg != "ES256" || key.Use != "sig" {
+		t.Fatalf("unexpected jwk: %#v", key)
+	}
+	x, err := base64.RawURLEncoding.DecodeString(key.X)
+	if err != nil {
+		t.Fatalf("failed to decode jwk x coordinate: %v", err)
+	}
+	y, err := base64.RawURLEncoding.DecodeString(key.Y)
+	if err != nil {
+		t.Fatalf("failed to decode jwk y coordinate: %v", err)
+	}
+	publicKey, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), slices.Concat([]byte{4}, x, y))
+	if err != nil {
+		t.Fatalf("failed to parse jwk public key: %v", err)
+	}
+	return publicKey
 }
 
 func fetchUserInfo(t *testing.T, provider *providerProcess, accessToken string) userInfoClaims {
@@ -1322,11 +1335,15 @@ func accessTokenHash(accessToken string) string {
 func jwkThumbprint(t *testing.T, key jwk) string {
 	t.Helper()
 
-	members, err := json.Marshal(map[string]string{"e": key.E, "kty": key.KeyType, "n": key.N}, json.Deterministic(true))
+	members := map[string]string{"e": key.E, "kty": key.KeyType, "n": key.N}
+	if key.KeyType == "EC" {
+		members = map[string]string{"crv": key.Curve, "kty": key.KeyType, "x": key.X, "y": key.Y}
+	}
+	encoded, err := json.Marshal(members, json.Deterministic(true))
 	if err != nil {
 		t.Fatalf("failed to encode jwk thumbprint members: %v", err)
 	}
-	sum := sha256.Sum256(members)
+	sum := sha256.Sum256(encoded)
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 

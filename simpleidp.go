@@ -20,8 +20,8 @@
 // SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL - refresh token idle timeout (default: "30m")
 // SIMPLE_IDP_REFRESH_TOKEN_MAX_TTL  - refresh token maximum lifetime (default: "10h")
 // SIMPLE_IDP_KEY_ID                 - comma-separated JWKS key IDs, one per key (default: RFC 7638 thumbprints)
-// SIMPLE_IDP_KEY_FILE               - PEM file with PKCS8 RSA private keys (generated if empty)
-// SIMPLE_IDP_KEY_B64                - comma-separated base64 PKCS8 RSA private keys (alternative to KEY_FILE)
+// SIMPLE_IDP_KEY_FILE               - PEM file with PKCS8 RSA or P-256 ECDSA private keys (generated if empty)
+// SIMPLE_IDP_KEY_B64                - comma-separated base64 PKCS8 RSA or P-256 ECDSA private keys (alternative to KEY_FILE)
 // SIMPLE_IDP_STATE_FILE             - JSON file that persists the state (default: in-memory)
 // SIMPLE_IDP_LOG_LEVEL              - log level: "debug", "info", "warn", or "error" (default: "info")
 //
@@ -30,6 +30,7 @@
 // SIMPLE_IDP_CLIENT_<LABEL>_ID                                  - client ID
 // SIMPLE_IDP_CLIENT_<LABEL>_SECRET                              - client secret (omit for public clients)
 // SIMPLE_IDP_CLIENT_<LABEL>_AUDIENCE                            - "aud" claim of access tokens (default: client ID)
+// SIMPLE_IDP_CLIENT_<LABEL>_SIGNING_ALG                         - signing algorithm for its ID, access, and logout tokens: "RS256" or "ES256" (default: "RS256")
 // SIMPLE_IDP_CLIENT_<LABEL>_REDIRECT_URL                        - allowed redirect URIs (whitespace-separated, optional with a secret)
 // SIMPLE_IDP_CLIENT_<LABEL>_POST_LOGOUT_REDIRECT_URL            - allowed post-logout redirect URIs (whitespace-separated, optional)
 // SIMPLE_IDP_CLIENT_<LABEL>_BACKCHANNEL_LOGOUT_URI              - back-channel logout URI (optional)
@@ -60,6 +61,8 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
@@ -140,6 +143,7 @@ type client struct {
 	secret                           string
 	isPublic                         bool
 	audience                         string
+	signingAlg                       string
 	redirectURLs                     []string
 	postLogoutRedirectURLs           []string
 	backchannelLogoutURI             url.URL
@@ -244,7 +248,9 @@ type authorizeRequest struct {
 
 type signingKey struct {
 	id        string
-	privKey   *rsa.PrivateKey
+	alg       string
+	privKey   crypto.Signer
+	publicJWK map[string]string
 	generated bool
 }
 
@@ -266,7 +272,7 @@ type identityProvider struct {
 	refreshTokenIdleTTL time.Duration
 	refreshTokenMaxTTL  time.Duration
 	signingKeys         []signingKey
-	generatedKey        []byte
+	generatedKeys       [][]byte
 	csrfKey             []byte
 	clients             map[string]client
 	users               map[string]user
@@ -368,15 +374,22 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 		}
 	}
 
-	signingKeys, err := loadSigningKeys(lookupEnv, readFile, state.SigningKey)
+	signingKeys, err := loadSigningKeys(lookupEnv, readFile, state.SigningKeys)
 	if err != nil {
 		return "", nil, err
 	}
-	generatedKey := state.SigningKey
+	for _, client := range clients {
+		if !slices.ContainsFunc(signingKeys, func(key signingKey) bool { return key.alg == client.signingAlg }) {
+			return "", nil, fmt.Errorf("no %s signing key is configured for client ID %q", client.signingAlg, client.id)
+		}
+	}
+	generatedKeys := state.SigningKeys
 	if signingKeys[0].generated {
-		generatedKey, err = x509.MarshalPKCS8PrivateKey(signingKeys[0].privKey)
-		if err != nil {
-			return "", nil, fmt.Errorf("failed to encode generated RSA key: %w", err)
+		generatedKeys = make([][]byte, len(signingKeys))
+		for i, key := range signingKeys {
+			if generatedKeys[i], err = x509.MarshalPKCS8PrivateKey(key.privKey); err != nil {
+				return "", nil, fmt.Errorf("failed to encode generated signing key: %w", err)
+			}
 		}
 	}
 
@@ -406,7 +419,7 @@ func newIdentityProvider(environ []string, lookupEnv func(string) string, readFi
 		refreshTokenIdleTTL: refreshTokenIdleTTL,
 		refreshTokenMaxTTL:  refreshTokenMaxTTL,
 		signingKeys:         signingKeys,
-		generatedKey:        generatedKey,
+		generatedKeys:       generatedKeys,
 		csrfKey:             csrfKey,
 		clients:             clients,
 		users:               users,
@@ -567,6 +580,12 @@ func (p *identityProvider) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *identityProvider) handleDiscovery(w http.ResponseWriter, r *http.Request) {
+	var signingAlgs []string
+	for _, key := range p.signingKeys {
+		if !slices.Contains(signingAlgs, key.alg) {
+			signingAlgs = append(signingAlgs, key.alg)
+		}
+	}
 	doc := struct {
 		Issuer                                     string   `json:"issuer"`
 		AuthorizationEndpoint                      string   `json:"authorization_endpoint"`
@@ -610,7 +629,7 @@ func (p *identityProvider) handleDiscovery(w http.ResponseWriter, r *http.Reques
 		ResponseModesSupported:                    []string{"query"},
 		GrantTypesSupported:                       []string{"authorization_code", "refresh_token", "client_credentials"},
 		SubjectTypesSupported:                     []string{"public"},
-		IDTokenSigningAlgValuesSupported:          []string{"RS256"},
+		IDTokenSigningAlgValuesSupported:          signingAlgs,
 		TokenEndpointAuthMethodsSupported:         []string{"none", "client_secret_basic", "client_secret_post"},
 		RevocationEndpointAuthMethodsSupported:    []string{"none", "client_secret_basic", "client_secret_post"},
 		IntrospectionEndpointAuthMethodsSupported: []string{"client_secret_basic", "client_secret_post"},
@@ -934,17 +953,11 @@ func (p *identityProvider) handleUserInfo(w http.ResponseWriter, r *http.Request
 }
 
 func (p *identityProvider) handleJWKS(w http.ResponseWriter, r *http.Request) {
-	keys := make([]map[string]any, 0, len(p.signingKeys))
+	keys := make([]map[string]string, 0, len(p.signingKeys))
 	for _, key := range p.signingKeys {
-		pub := &key.privKey.PublicKey
-		keys = append(keys, map[string]any{
-			"kty": "RSA",
-			"alg": "RS256",
-			"use": "sig",
-			"kid": key.id,
-			"n":   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
-			"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
-		})
+		jwk := map[string]string{"alg": key.alg, "use": "sig", "kid": key.id}
+		maps.Copy(jwk, key.publicJWK)
+		keys = append(keys, jwk)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"keys": keys})
 }
@@ -1776,7 +1789,7 @@ func (p *identityProvider) resolveIDTokenHint(token string) (tokenHint, bool) {
 		return tokenHint{}, false
 	}
 	keyIndex := slices.IndexFunc(p.signingKeys, func(key signingKey) bool { return key.id == header.Kid })
-	if header.Alg != "RS256" || header.Typ != "JWT" || keyIndex < 0 {
+	if keyIndex < 0 || header.Alg != p.signingKeys[keyIndex].alg || header.Typ != "JWT" {
 		return tokenHint{}, false
 	}
 
@@ -1786,7 +1799,14 @@ func (p *identityProvider) resolveIDTokenHint(token string) (tokenHint, bool) {
 	}
 	signingInput := parts[0] + "." + parts[1]
 	digest := sha256.Sum256([]byte(signingInput))
-	if err := rsa.VerifyPKCS1v15(&p.signingKeys[keyIndex].privKey.PublicKey, crypto.SHA256, digest[:], signature); err != nil {
+	verified := false
+	switch privKey := p.signingKeys[keyIndex].privKey.(type) {
+	case *rsa.PrivateKey:
+		verified = rsa.VerifyPKCS1v15(&privKey.PublicKey, crypto.SHA256, digest[:], signature) == nil
+	case *ecdsa.PrivateKey:
+		verified = len(signature) == 64 && ecdsa.Verify(&privKey.PublicKey, digest[:], new(big.Int).SetBytes(signature[:32]), new(big.Int).SetBytes(signature[32:]))
+	}
+	if !verified {
 		return tokenHint{}, false
 	}
 
@@ -2442,7 +2462,7 @@ type persistedState struct {
 	Subjects      map[string]string
 	PublicClients map[string]bool
 	CSRFKey       []byte
-	SigningKey    []byte
+	SigningKeys   [][]byte
 	UserEdits     map[string]userEdit
 	Sessions      map[string]session
 	AccessTokens  map[string]accessToken
@@ -2528,7 +2548,7 @@ func (p *identityProvider) saveState() error {
 		Subjects:      map[string]string{},
 		PublicClients: map[string]bool{},
 		CSRFKey:       p.csrfKey,
-		SigningKey:    p.generatedKey,
+		SigningKeys:   p.generatedKeys,
 		UserEdits:     p.userEdits,
 		Sessions:      p.sessions,
 		AccessTokens:  p.accessTokens,
@@ -2849,7 +2869,7 @@ func (p *identityProvider) mintAccessToken(client client, user user, scope strin
 		maps.Copy(payload, p.buildClaimsForScope(user, scope))
 	}
 
-	return p.signJWT("at+jwt", payload)
+	return p.signJWT("at+jwt", client.signingAlg, payload)
 }
 
 func (p *identityProvider) mintIDToken(user user, client client, code pendingCode, accessToken string, issuedAt time.Time) (string, error) {
@@ -2876,7 +2896,7 @@ func (p *identityProvider) mintIDToken(user user, client client, code pendingCod
 		}
 	}
 
-	return p.signJWT("JWT", payload)
+	return p.signJWT("JWT", client.signingAlg, payload)
 }
 
 func (p *identityProvider) mintLogoutToken(user user, client client, sessionID string) (string, error) {
@@ -2900,13 +2920,13 @@ func (p *identityProvider) mintLogoutToken(user user, client client, sessionID s
 		payload["sid"] = sessionID
 	}
 
-	return p.signJWT("logout+jwt", payload)
+	return p.signJWT("logout+jwt", client.signingAlg, payload)
 }
 
-func (p *identityProvider) signJWT(typ string, payload map[string]any) (string, error) {
-	key := p.signingKeys[0]
+func (p *identityProvider) signJWT(typ, alg string, payload map[string]any) (string, error) {
+	key := p.signingKeys[slices.IndexFunc(p.signingKeys, func(key signingKey) bool { return key.alg == alg })]
 	header := map[string]string{
-		"alg": "RS256",
+		"alg": key.alg,
 		"typ": typ,
 		"kid": key.id,
 	}
@@ -2925,7 +2945,16 @@ func (p *identityProvider) signJWT(typ string, payload map[string]any) (string, 
 
 	signingInput := headerB64 + "." + payloadB64
 	digest := sha256.Sum256([]byte(signingInput))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, key.privKey, crypto.SHA256, digest[:])
+	var signature []byte
+	switch privKey := key.privKey.(type) {
+	case *rsa.PrivateKey:
+		signature, err = rsa.SignPKCS1v15(rand.Reader, privKey, crypto.SHA256, digest[:])
+	case *ecdsa.PrivateKey:
+		var r, s *big.Int
+		if r, s, err = ecdsa.Sign(rand.Reader, privKey, digest[:]); err == nil {
+			signature = append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...)
+		}
+	}
 	if err != nil {
 		return "", err
 	}
@@ -3424,6 +3453,7 @@ func loadClients(environ []string, lookupEnv func(string) string) (map[string]cl
 		"_ID",
 		"_SECRET",
 		"_AUDIENCE",
+		"_SIGNING_ALG",
 		"_REDIRECT_URL",
 		"_POST_LOGOUT_REDIRECT_URL",
 		"_BACKCHANNEL_LOGOUT_URI",
@@ -3441,6 +3471,10 @@ func loadClients(environ []string, lookupEnv func(string) string) (map[string]cl
 		}
 		if _, dup := clients[id]; dup {
 			return nil, fmt.Errorf("duplicate client ID %q", id)
+		}
+		signingAlg := envOr(lookupEnv, prefix+label+"_SIGNING_ALG", "RS256")
+		if signingAlg != "RS256" && signingAlg != "ES256" {
+			return nil, fmt.Errorf("client %q signing algorithm: must be RS256 or ES256", label)
 		}
 		var redirectURLs []string
 		var err error
@@ -3480,6 +3514,7 @@ func loadClients(environ []string, lookupEnv func(string) string) (map[string]cl
 			secret:                           secret,
 			isPublic:                         isPublic,
 			audience:                         audience,
+			signingAlg:                       signingAlg,
 			redirectURLs:                     redirectURLs,
 			postLogoutRedirectURLs:           postLogoutRedirectURLs,
 			backchannelLogoutURI:             backchannelLogoutURI,
@@ -3598,8 +3633,8 @@ func loadUsers(environ []string, lookupEnv func(string) string) (map[string]user
 	return users, nil
 }
 
-func loadSigningKeys(lookupEnv func(string) string, readFile func(string) ([]byte, error), persistedKey []byte) ([]signingKey, error) {
-	var privKeys []*rsa.PrivateKey
+func loadSigningKeys(lookupEnv func(string) string, readFile func(string) ([]byte, error), persistedKeys [][]byte) ([]signingKey, error) {
+	var privKeys []crypto.Signer
 	generated := false
 	if encodedKeys := envSplit(lookupEnv, "SIMPLE_IDP_KEY_B64", ","); encodedKeys != nil {
 		for _, encoded := range encodedKeys {
@@ -3607,7 +3642,7 @@ func loadSigningKeys(lookupEnv func(string) string, readFile func(string) ([]byt
 			if err != nil {
 				return nil, fmt.Errorf("failed to decode SIMPLE_IDP_KEY_B64: %w", err)
 			}
-			key, err := parseRSAPKCS8(der, "SIMPLE_IDP_KEY_B64")
+			key, err := parseSigningKey(der, "SIMPLE_IDP_KEY_B64")
 			if err != nil {
 				return nil, err
 			}
@@ -3624,7 +3659,7 @@ func loadSigningKeys(lookupEnv func(string) string, readFile func(string) ([]byt
 			if !strings.HasSuffix(block.Type, "PRIVATE KEY") {
 				continue
 			}
-			key, err := parseRSAPKCS8(block.Bytes, path)
+			key, err := parseSigningKey(block.Bytes, path)
 			if err != nil {
 				return nil, err
 			}
@@ -3636,19 +3671,26 @@ func loadSigningKeys(lookupEnv func(string) string, readFile func(string) ([]byt
 		if len(privKeys) == 0 {
 			return nil, fmt.Errorf("no private key found in key file %q", path)
 		}
-	} else if len(persistedKey) > 0 {
-		key, err := parseRSAPKCS8(persistedKey, "SIMPLE_IDP_STATE_FILE")
-		if err != nil {
-			return nil, err
-		}
-		privKeys = append(privKeys, key)
 	} else {
-		key, err := rsa.GenerateKey(rand.Reader, 3072)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate RSA key: %w", err)
+		for _, der := range persistedKeys {
+			key, err := parseSigningKey(der, "SIMPLE_IDP_STATE_FILE")
+			if err != nil {
+				return nil, err
+			}
+			privKeys = append(privKeys, key)
 		}
-		slog.Info("generated RSA key")
-		privKeys = append(privKeys, key)
+		if len(privKeys) == 0 {
+			rsaKey, err := rsa.GenerateKey(rand.Reader, 3072)
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate RSA key: %w", err)
+			}
+			ecdsaKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate ECDSA key: %w", err)
+			}
+			slog.Info("generated RSA and ECDSA keys")
+			privKeys = append(privKeys, rsaKey, ecdsaKey)
+		}
 		generated = true
 	}
 
@@ -3660,9 +3702,32 @@ func loadSigningKeys(lookupEnv func(string) string, readFile func(string) ([]byt
 	keyIDs := map[string]struct{}{}
 	keys := make([]signingKey, len(privKeys))
 	for i, privKey := range privKeys {
-		n := base64.RawURLEncoding.EncodeToString(privKey.N.Bytes())
-		e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privKey.E)).Bytes())
-		sum := sha256.Sum256(fmt.Appendf(nil, `{"e":%q,"kty":"RSA","n":%q}`, e, n))
+		var alg string
+		var publicJWK map[string]string
+		switch key := privKey.(type) {
+		case *rsa.PrivateKey:
+			alg, publicJWK = "RS256", map[string]string{
+				"kty": "RSA",
+				"n":   base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
+				"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
+			}
+		case *ecdsa.PrivateKey:
+			point, err := key.PublicKey.Bytes()
+			if err != nil {
+				return nil, fmt.Errorf("failed to encode ECDSA public key: %w", err)
+			}
+			alg, publicJWK = "ES256", map[string]string{
+				"kty": "EC",
+				"crv": "P-256",
+				"x":   base64.RawURLEncoding.EncodeToString(point[1:33]),
+				"y":   base64.RawURLEncoding.EncodeToString(point[33:]),
+			}
+		}
+		members, err := json.Marshal(publicJWK, json.Deterministic(true))
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode signing key thumbprint: %w", err)
+		}
+		sum := sha256.Sum256(members)
 		thumbprint := base64.RawURLEncoding.EncodeToString(sum[:])
 		if _, dup := thumbprints[thumbprint]; dup {
 			return nil, fmt.Errorf("duplicate signing key %q", thumbprint)
@@ -3676,25 +3741,34 @@ func loadSigningKeys(lookupEnv func(string) string, readFile func(string) ([]byt
 			return nil, errors.New("SIMPLE_IDP_KEY_ID: must list a unique key ID for each key")
 		}
 		keyIDs[keyID] = struct{}{}
-		keys[i] = signingKey{id: keyID, privKey: privKey, generated: generated}
+		keys[i] = signingKey{id: keyID, alg: alg, privKey: privKey, publicJWK: publicJWK, generated: generated}
+	}
+	if !slices.ContainsFunc(keys, func(key signingKey) bool { return key.alg == "RS256" }) {
+		return nil, errors.New("signing keys must include an RSA key")
 	}
 	return keys, nil
 }
 
-func parseRSAPKCS8(der []byte, source string) (*rsa.PrivateKey, error) {
+func parseSigningKey(der []byte, source string) (crypto.Signer, error) {
 	parsedKey, err := x509.ParsePKCS8PrivateKey(der)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse key from %q: %w", source, err)
 	}
-	key, ok := parsedKey.(*rsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("key from %q is not RSA", source)
+	switch key := parsedKey.(type) {
+	case *rsa.PrivateKey:
+		if key.N.BitLen() < 2048 {
+			return nil, fmt.Errorf("RSA key from %q must be at least 2048 bits", source)
+		}
+		slog.LogAttrs(context.Background(), slog.LevelInfo, "loaded RSA key", slog.String("source", source))
+		return key, nil
+	case *ecdsa.PrivateKey:
+		if key.Curve != elliptic.P256() {
+			return nil, fmt.Errorf("ECDSA key from %q must use the P-256 curve", source)
+		}
+		slog.LogAttrs(context.Background(), slog.LevelInfo, "loaded ECDSA key", slog.String("source", source))
+		return key, nil
 	}
-	if key.N.BitLen() < 2048 {
-		return nil, fmt.Errorf("RSA key from %q must be at least 2048 bits", source)
-	}
-	slog.LogAttrs(context.Background(), slog.LevelInfo, "loaded RSA key", slog.String("source", source))
-	return key, nil
+	return nil, fmt.Errorf("key from %q is not RSA or ECDSA", source)
 }
 
 // -------------------------------------------------------------------------- //

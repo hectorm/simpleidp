@@ -87,6 +87,13 @@ func testPersistence(t *testing.T) {
 			"SIMPLE_IDP_USER_ALICE_PASSWORD=" + testPassword,
 			"SIMPLE_IDP_STATE_FILE=" + filepath.Join(t.TempDir(), "state.json"),
 		}
+		keyIDs := func(provider *identityProvider) []string {
+			var ids []string
+			for _, key := range provider.signingKeys {
+				ids = append(ids, key.id)
+			}
+			return ids
+		}
 		first, err := newIdentityProviderFromEnv(environ)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
@@ -96,25 +103,25 @@ func testPersistence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
-		if restored.signingKeys[0].privKey.N.Cmp(first.signingKeys[0].privKey.N) != 0 {
-			t.Fatal("expected the generated signing key to be restored")
+		if len(first.signingKeys) != 2 || !slices.Equal(keyIDs(restored), keyIDs(first)) {
+			t.Fatalf("expected the generated signing keys %q to be restored, got %q", keyIDs(first), keyIDs(restored))
 		}
-		if strings.Contains(logs.String(), "generated RSA key") {
-			t.Fatalf("expected the restored signing key to be used without generating a new one, got:\n%s", logs.String())
+		if strings.Contains(logs.String(), "generated RSA and ECDSA keys") {
+			t.Fatalf("expected the restored signing keys to be used without generating new ones, got:\n%s", logs.String())
 		}
 		configured, err := newIdentityProviderFromEnv(append(environ, "SIMPLE_IDP_KEY_B64="+signingKey))
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
-		if configured.signingKeys[0].generated || configured.signingKeys[0].privKey.N.Cmp(first.signingKeys[0].privKey.N) == 0 {
-			t.Fatal("expected the configured signing key to replace the restored one")
+		if configured.signingKeys[0].generated || slices.Equal(keyIDs(configured), keyIDs(first)) {
+			t.Fatal("expected the configured signing key to replace the restored ones")
 		}
 		restoredAgain, err := newIdentityProviderFromEnv(environ)
 		if err != nil {
 			t.Fatalf("failed to create provider: %v", err)
 		}
-		if restoredAgain.signingKeys[0].privKey.N.Cmp(first.signingKeys[0].privKey.N) != 0 {
-			t.Fatal("expected the generated signing key to be kept while configured keys were in use")
+		if !slices.Equal(keyIDs(restoredAgain), keyIDs(first)) {
+			t.Fatalf("expected the generated signing keys %q to be kept while configured keys were in use, got %q", keyIDs(first), keyIDs(restoredAgain))
 		}
 	})
 

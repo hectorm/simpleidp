@@ -7,6 +7,7 @@ package simpleidp
 import (
 	"cmp"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -920,7 +921,7 @@ func testSigning(t *testing.T) {
 						if err == nil || !strings.Contains(err.Error(), "at least 2048 bits") {
 							t.Fatalf("expected minimum key size error, got %v", err)
 						}
-					} else if err != nil || loaded[0].privKey.N.Cmp(key.N) != 0 {
+					} else if err != nil || !key.Equal(loaded[0].privKey) {
 						t.Fatalf("failed to load compliant RSA key: %v", err)
 					}
 				})
@@ -928,15 +929,21 @@ func testSigning(t *testing.T) {
 		}
 	})
 
-	t.Run("generates a 3072-bit RSA signing key when none is configured", func(t *testing.T) {
+	t.Run("generates RSA and ECDSA signing keys when none is configured", func(t *testing.T) {
 		keys, err := loadSigningKeys(func(string) string { return "" }, func(name string) ([]byte, error) {
 			return nil, fmt.Errorf("unexpected key file read: %s", name)
 		}, nil)
 		if err != nil {
-			t.Fatalf("failed to generate RSA key: %v", err)
+			t.Fatalf("failed to generate signing keys: %v", err)
 		}
-		if bits := keys[0].privKey.N.BitLen(); bits != 3072 {
-			t.Fatalf("generated key size mismatch: got %d, want %d", bits, 3072)
+		if len(keys) != 2 {
+			t.Fatalf("expected 2 generated signing keys, got %d", len(keys))
+		}
+		if rsaKey, ok := keys[0].privKey.(*rsa.PrivateKey); !ok || rsaKey.N.BitLen() != 3072 || keys[0].alg != "RS256" {
+			t.Fatalf("expected a 3072-bit RS256 key first, got alg %q", keys[0].alg)
+		}
+		if ecdsaKey, ok := keys[1].privKey.(*ecdsa.PrivateKey); !ok || ecdsaKey.Curve != elliptic.P256() || keys[1].alg != "ES256" {
+			t.Fatalf("expected a P-256 ES256 key second, got alg %q", keys[1].alg)
 		}
 	})
 
@@ -960,7 +967,7 @@ func testSigning(t *testing.T) {
 			}
 			return ""
 		}, nil, nil)
-		if err != nil || loaded[0].privKey.N.Cmp(key.N) != 0 {
+		if err != nil || !key.Equal(loaded[0].privKey) {
 			t.Fatalf("failed to load the wrapped base64 signing key: %v", err)
 		}
 	})
@@ -988,17 +995,33 @@ func testSigning(t *testing.T) {
 		}, func(string) ([]byte, error) {
 			return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: ders[1]}), nil
 		}, nil)
-		if err != nil || loaded[0].privKey.N.Cmp(keys[0].N) != 0 {
+		if err != nil || !keys[0].Equal(loaded[0].privKey) {
 			t.Fatalf("expected the base64 signing key to be loaded: %v", err)
 		}
 	})
 
 	t.Run("rejects unusable signing keys", func(t *testing.T) {
-		ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ecDER, err := x509.MarshalPKCS8PrivateKey(ecKey)
+		p256DER, err := x509.MarshalPKCS8PrivateKey(p256Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p384Key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p384DER, err := x509.MarshalPKCS8PrivateKey(p384Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, ed25519Key, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ed25519DER, err := x509.MarshalPKCS8PrivateKey(ed25519Key)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1012,14 +1035,17 @@ func testSigning(t *testing.T) {
 		}{
 			{name: "invalid base64", source: "KEY_B64", value: "not base64!", want: "failed to decode SIMPLE_IDP_KEY_B64"},
 			{name: "base64 key that is not PKCS8", source: "KEY_B64", value: base64.StdEncoding.EncodeToString(notPKCS8), want: "failed to parse key"},
-			{name: "base64 key that is not RSA", source: "KEY_B64", value: base64.StdEncoding.EncodeToString(ecDER), want: "is not RSA"},
+			{name: "base64 key that is not RSA or ECDSA", source: "KEY_B64", value: base64.StdEncoding.EncodeToString(ed25519DER), want: "is not RSA or ECDSA"},
+			{name: "base64 ECDSA key that is not P-256", source: "KEY_B64", value: base64.StdEncoding.EncodeToString(p384DER), want: "must use the P-256 curve"},
+			{name: "base64 keys without an RSA key", source: "KEY_B64", value: base64.StdEncoding.EncodeToString(p256DER), want: "must include an RSA key"},
 			{name: "missing key file", source: "KEY_FILE", value: "missing.pem", want: "failed to read key file"},
 			{name: "key file without a PEM block", source: "KEY_FILE", value: "key.pem", file: []byte("not a PEM file"), want: "no private key found"},
 			{name: "key file without a private key", source: "KEY_FILE", value: "key.pem", file: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: notPKCS8}), want: "no private key found"},
 			{name: "key file with an invalid PEM block", source: "KEY_FILE", value: "key.pem", file: slices.Concat(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: notPKCS8}), []byte("-----BEGIN PRIVATE KEY-----\nnot base64!\n-----END PRIVATE KEY-----\n")), want: "invalid PEM block"},
 			{name: "key file with an unsupported private key", source: "KEY_FILE", value: "key.pem", file: pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: notPKCS8}), want: "failed to parse key"},
 			{name: "key file that is not PKCS8", source: "KEY_FILE", value: "key.pem", file: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: notPKCS8}), want: "failed to parse key"},
-			{name: "key file that is not RSA", source: "KEY_FILE", value: "key.pem", file: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: ecDER}), want: "is not RSA"},
+			{name: "key file that is not RSA or ECDSA", source: "KEY_FILE", value: "key.pem", file: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: ed25519DER}), want: "is not RSA or ECDSA"},
+			{name: "key file with an ECDSA key that is not P-256", source: "KEY_FILE", value: "key.pem", file: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: p384DER}), want: "must use the P-256 curve"},
 		} {
 			t.Run(testCase.name, func(t *testing.T) {
 				_, err := loadSigningKeys(func(name string) string {
@@ -1071,6 +1097,95 @@ func testSigning(t *testing.T) {
 			if header := decodeJWTHeader(t, jwt); header.Kid != config.KeyID {
 				t.Fatalf("kid mismatch: got %q, want %q", header.Kid, config.KeyID)
 			}
+		}
+	})
+
+	t.Run("signs tokens with ES256 for clients that request it", func(t *testing.T) {
+		rsaKey, err := testSigningKeyB64()
+		if err != nil {
+			t.Fatalf("failed to generate signing key: %v", err)
+		}
+		ecdsaKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ecdsaDER, err := x509.MarshalPKCS8PrivateKey(ecdsaKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receiver, receiverURL := startBackchannelLogoutReceiver(t)
+		config := defaultProviderConfig()
+		config.KeyB64 = rsaKey + "," + base64.StdEncoding.EncodeToString(ecdsaDER)
+		config.Clients[0].SigningAlg = "ES256"
+		config.Clients[0].BackchannelLogoutURI = receiverURL
+		provider := startProvider(t, config)
+		token := performLogoutWithBackchannel(t, provider)
+		requests := receiver.receivedRequests()
+		if len(requests) != 1 {
+			t.Fatalf("expected 1 backchannel logout request, got %d", len(requests))
+		}
+
+		jwks := fetchJWKS(t, provider)
+		ecdsaIndex := slices.IndexFunc(jwks.Keys, func(key jwk) bool { return key.KeyType == "EC" })
+		if ecdsaIndex < 0 || jwks.Keys[ecdsaIndex].KeyID != jwkThumbprint(t, jwks.Keys[ecdsaIndex]) {
+			t.Fatalf("expected an ECDSA jwk identified by its thumbprint, got %#v", jwks.Keys)
+		}
+		ecdsaKeyID := jwks.Keys[ecdsaIndex].KeyID
+		for name, jwt := range map[string]string{"id token": token.IDToken, "access token": token.AccessToken, "logout token": requests[0].rawToken} {
+			if header := decodeJWTHeader(t, jwt); header.Alg != "ES256" || header.Kid != ecdsaKeyID {
+				t.Fatalf("%s header mismatch: got %#v", name, header)
+			}
+			assertJWTSignature(t, provider, jwt)
+		}
+		if algs := fetchDiscovery(t, provider).IDTokenSigningAlgValuesSupported; !slices.Equal(algs, []string{"RS256", "ES256"}) {
+			t.Fatalf("id_token_signing_alg_values_supported mismatch: got %q", algs)
+		}
+
+		otherRequest := newDefaultConfidentialAuthorizationRequest("signing-es256-other")
+		otherRequest.ClientID = otherClientID
+		otherRequest.RedirectURI = otherClientRedirect
+		otherToken := authorizeAndExchange(t, provider, otherRequest, tokenRequest{
+			ClientID:     otherRequest.ClientID,
+			ClientSecret: otherClientSecret,
+			CodeVerifier: otherRequest.Verifier,
+		})
+		if header := decodeJWTHeader(t, otherToken.IDToken); header.Alg != "RS256" {
+			t.Fatalf("expected RS256 for clients without a signing algorithm, got %q", header.Alg)
+		}
+		if _, ok := provider.idp.resolveIDTokenHint(token.IDToken); !ok {
+			t.Fatal("expected the ES256 ID Token to be accepted as a hint")
+		}
+		if _, ok := provider.idp.resolveIDTokenHint(resignJWT(t, otherToken.IDToken, ecdsaKey, ecdsaKeyID)); ok {
+			t.Fatal("expected a hint whose alg does not match its key to be rejected")
+		}
+	})
+
+	t.Run("requires a signing key for the client signing algorithm", func(t *testing.T) {
+		signingKey, err := testSigningKeyB64()
+		if err != nil {
+			t.Fatalf("failed to generate signing key: %v", err)
+		}
+		for _, testCase := range []struct {
+			signingAlg string
+			want       string
+		}{
+			{signingAlg: "HS256", want: "must be RS256 or ES256"},
+			{signingAlg: "ES256", want: "no ES256 signing key"},
+		} {
+			t.Run(testCase.signingAlg, func(t *testing.T) {
+				_, err := newIdentityProviderFromEnv([]string{
+					"SIMPLE_IDP_ISSUER=http://127.0.0.1",
+					"SIMPLE_IDP_KEY_B64=" + signingKey,
+					"SIMPLE_IDP_CLIENT_WEB_ID=" + webClientID,
+					"SIMPLE_IDP_CLIENT_WEB_SECRET=" + webClientSecret,
+					"SIMPLE_IDP_CLIENT_WEB_SIGNING_ALG=" + testCase.signingAlg,
+					"SIMPLE_IDP_USER_ALICE_USERNAME=" + testUsername,
+					"SIMPLE_IDP_USER_ALICE_PASSWORD=" + testPassword,
+				})
+				if err == nil || !strings.Contains(err.Error(), testCase.want) {
+					t.Fatalf("expected error containing %q, got %v", testCase.want, err)
+				}
+			})
 		}
 	})
 }
@@ -1168,7 +1283,7 @@ func testRotationOfAsymmetricSigningKeys(t *testing.T) {
 			t.Fatalf("expected %d signing keys, got %d: %v", len(keys), len(loaded), err)
 		}
 		for i, key := range loaded {
-			if key.id != keyIDs[i] || key.privKey.N.Cmp(keys[i].N) != 0 {
+			if key.id != keyIDs[i] || !keys[i].Equal(key.privKey) {
 				t.Fatalf("signing key %d mismatch: got kid %q", i, key.id)
 			}
 		}
@@ -1202,7 +1317,7 @@ func testRotationOfAsymmetricSigningKeys(t *testing.T) {
 			t.Fatalf("expected %d signing keys, got %d: %v", len(keys), len(loaded), err)
 		}
 		for i, key := range loaded {
-			if key.id != keyIDs[i] || key.privKey.N.Cmp(keys[i].N) != 0 {
+			if key.id != keyIDs[i] || !keys[i].Equal(key.privKey) {
 				t.Fatalf("signing key %d mismatch: got kid %q", i, key.id)
 			}
 		}

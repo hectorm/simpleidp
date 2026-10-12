@@ -33,43 +33,44 @@ All configuration is done through environment variables. At least one client and
 
 ### General
 
-| Variable                            | Description                                                               |
-| ----------------------------------- | ------------------------------------------------------------------------- |
-| `SIMPLE_IDP_LISTEN`                 | Listen address (default `:8227`)                                          |
-| `SIMPLE_IDP_ISSUER`                 | Issuer URL as seen by clients (required)                                  |
-| `SIMPLE_IDP_TITLE`                  | Login page title (default `Simple IdP`)                                   |
-| `SIMPLE_IDP_LOGO`                   | Logo URL or data URI shown instead of the title (default: none)           |
-| `SIMPLE_IDP_FAVICON`                | Favicon URL or data URI (default: blank icon)                             |
-| `SIMPLE_IDP_ACCENT_COLOR`           | Accent color for the pages (default `oklch(49% 0.19 264)`)                |
-| `SIMPLE_IDP_COLOR_SCHEME`           | CSS `color-scheme` value for the pages (default `light dark`)             |
-| `SIMPLE_IDP_LANGUAGE`               | Language for every page (default: negotiated)                             |
-| `SIMPLE_IDP_EDIT_PROFILE`           | Let users edit their profile (default `false`)                            |
-| `SIMPLE_IDP_SESSION_IDLE_TTL`       | Session idle timeout (default `30m`)                                      |
-| `SIMPLE_IDP_SESSION_MAX_TTL`        | Session maximum lifetime (default `10h`)                                  |
-| `SIMPLE_IDP_ACCESS_TOKEN_TTL`       | Access and ID token lifetime (default `5m`)                               |
-| `SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL` | Refresh token idle timeout (default `30m`)                                |
-| `SIMPLE_IDP_REFRESH_TOKEN_MAX_TTL`  | Refresh token maximum lifetime (default `10h`)                            |
-| `SIMPLE_IDP_KEY_ID`                 | Comma-separated JWKS key IDs, one per key (default: RFC 7638 thumbprints) |
-| `SIMPLE_IDP_KEY_FILE`               | PEM file with PKCS8 RSA private keys (generated if empty)                 |
-| `SIMPLE_IDP_KEY_B64`                | Comma-separated base64 PKCS8 RSA private keys (alternative to `KEY_FILE`) |
-| `SIMPLE_IDP_STATE_FILE`             | JSON file that persists the state (default: in-memory)                    |
-| `SIMPLE_IDP_LOG_LEVEL`              | Log level: `debug`, `info`, `warn` or `error` (default `info`)            |
+| Variable                            | Description                                                                              |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- |
+| `SIMPLE_IDP_LISTEN`                 | Listen address (default `:8227`)                                                         |
+| `SIMPLE_IDP_ISSUER`                 | Issuer URL as seen by clients (required)                                                 |
+| `SIMPLE_IDP_TITLE`                  | Login page title (default `Simple IdP`)                                                  |
+| `SIMPLE_IDP_LOGO`                   | Logo URL or data URI shown instead of the title (default: none)                          |
+| `SIMPLE_IDP_FAVICON`                | Favicon URL or data URI (default: blank icon)                                            |
+| `SIMPLE_IDP_ACCENT_COLOR`           | Accent color for the pages (default `oklch(49% 0.19 264)`)                               |
+| `SIMPLE_IDP_COLOR_SCHEME`           | CSS `color-scheme` value for the pages (default `light dark`)                            |
+| `SIMPLE_IDP_LANGUAGE`               | Language for every page (default: negotiated)                                            |
+| `SIMPLE_IDP_EDIT_PROFILE`           | Let users edit their profile (default `false`)                                           |
+| `SIMPLE_IDP_SESSION_IDLE_TTL`       | Session idle timeout (default `30m`)                                                     |
+| `SIMPLE_IDP_SESSION_MAX_TTL`        | Session maximum lifetime (default `10h`)                                                 |
+| `SIMPLE_IDP_ACCESS_TOKEN_TTL`       | Access and ID token lifetime (default `5m`)                                              |
+| `SIMPLE_IDP_REFRESH_TOKEN_IDLE_TTL` | Refresh token idle timeout (default `30m`)                                               |
+| `SIMPLE_IDP_REFRESH_TOKEN_MAX_TTL`  | Refresh token maximum lifetime (default `10h`)                                           |
+| `SIMPLE_IDP_KEY_ID`                 | Comma-separated JWKS key IDs, one per key (default: RFC 7638 thumbprints)                |
+| `SIMPLE_IDP_KEY_FILE`               | PEM file with PKCS8 RSA or P-256 ECDSA private keys (generated if empty)                 |
+| `SIMPLE_IDP_KEY_B64`                | Comma-separated base64 PKCS8 RSA or P-256 ECDSA private keys (alternative to `KEY_FILE`) |
+| `SIMPLE_IDP_STATE_FILE`             | JSON file that persists the state (default: in-memory)                                   |
+| `SIMPLE_IDP_LOG_LEVEL`              | Log level: `debug`, `info`, `warn` or `error` (default `info`)                           |
 
-With several signing keys, the first one signs and all of them are published in the JWKS, which keeps tokens signed by previous keys verifiable.
+With several signing keys, the first key of each type signs and all of them are published in the JWKS, which keeps tokens signed by previous keys verifiable.
 
 ### Clients
 
 Clients are configured with a label prefix. The label is arbitrary and only used for grouping.
 
-| Variable                                                        | Description                                                          |
-| --------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `SIMPLE_IDP_CLIENT_<LABEL>_ID`                                  | Client ID                                                            |
-| `SIMPLE_IDP_CLIENT_<LABEL>_SECRET`                              | Client secret (omit for public clients)                              |
-| `SIMPLE_IDP_CLIENT_<LABEL>_AUDIENCE`                            | `aud` claim of access tokens (default: client ID)                    |
-| `SIMPLE_IDP_CLIENT_<LABEL>_REDIRECT_URL`                        | Allowed redirect URIs (whitespace-separated, optional with a secret) |
-| `SIMPLE_IDP_CLIENT_<LABEL>_POST_LOGOUT_REDIRECT_URL`            | Allowed post-logout redirect URIs (whitespace-separated, optional)   |
-| `SIMPLE_IDP_CLIENT_<LABEL>_BACKCHANNEL_LOGOUT_URI`              | Back-channel logout URI (optional)                                   |
-| `SIMPLE_IDP_CLIENT_<LABEL>_BACKCHANNEL_LOGOUT_SESSION_REQUIRED` | Require `sid` in logout token (optional, default `false`)            |
+| Variable                                                        | Description                                                                                   |
+| --------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `SIMPLE_IDP_CLIENT_<LABEL>_ID`                                  | Client ID                                                                                     |
+| `SIMPLE_IDP_CLIENT_<LABEL>_SECRET`                              | Client secret (omit for public clients)                                                       |
+| `SIMPLE_IDP_CLIENT_<LABEL>_AUDIENCE`                            | `aud` claim of access tokens (default: client ID)                                             |
+| `SIMPLE_IDP_CLIENT_<LABEL>_SIGNING_ALG`                         | Signing algorithm for its ID, access, and logout tokens: `RS256` or `ES256` (default `RS256`) |
+| `SIMPLE_IDP_CLIENT_<LABEL>_REDIRECT_URL`                        | Allowed redirect URIs (whitespace-separated, optional with a secret)                          |
+| `SIMPLE_IDP_CLIENT_<LABEL>_POST_LOGOUT_REDIRECT_URL`            | Allowed post-logout redirect URIs (whitespace-separated, optional)                            |
+| `SIMPLE_IDP_CLIENT_<LABEL>_BACKCHANNEL_LOGOUT_URI`              | Back-channel logout URI (optional)                                                            |
+| `SIMPLE_IDP_CLIENT_<LABEL>_BACKCHANNEL_LOGOUT_SESSION_REQUIRED` | Require `sid` in logout token (optional, default `false`)                                     |
 
 ### Users
 

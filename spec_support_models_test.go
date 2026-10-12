@@ -67,6 +67,7 @@ type clientConfig struct {
 	ID                               string
 	Secret                           string
 	Audience                         string
+	SigningAlg                       string
 	RedirectURL                      string
 	PostLogoutRedirectURL            string
 	BackchannelLogoutURI             string
@@ -201,6 +202,9 @@ type jwk struct {
 	KeyID   string `json:"kid"`
 	N       string `json:"n"`
 	E       string `json:"e"`
+	Curve   string `json:"crv"`
+	X       string `json:"x"`
+	Y       string `json:"y"`
 }
 
 type idTokenClaims struct {
